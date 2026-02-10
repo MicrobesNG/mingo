@@ -124,7 +124,7 @@ def slackit(phase, msg):
                 }
             ]
 
-        case "erorr":
+        case "error":
             blocks = [
                 {
                     "type": "section",

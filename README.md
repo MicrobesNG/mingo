@@ -1,12 +1,25 @@
-# Lab tools
+# Mingo
 
-Various little bits to help out the production team at MicrobesNG
+Run manager and status tools for Oxford Nanopore P2 Solo sequencers.
 
 ## Contents
 
- - `status/gridion_status.py` - show the current run status of all of the active flowcell positions in a local gridion (requires local guest mode enabled)
- - `status/flowcell_health.py` - show latest pore count for a flowcell and on which hosts it has been checked
+ - `mingo/run_manager.py` - interactive CLI to start runs from SLIMS
+ - `mingo/gridion_status.py` - show the current run status of all of the active flowcell positions in a local gridion (requires local guest mode enabled)
+ - `mingo/flowcell_health.py` - show latest pore count for a flowcell and on which hosts it has been checked
+ - `mingo/watch_gridion.py` - dynamic monitoring of sequencer status
 
+## Get Hacking
+
+We use `direnv` and `pip-tools` for environment management.
+
+1. Ensure `python 3.12` is available.
+2. `direnv allow` to set up the venv in `.direnv/python-3.12`.
+3. `pip install -r requirements.txt`
+4. Run the manager in mock mode to test:
+   ```bash
+   ./.direnv/python-3.12/bin/python3 mingo/run_manager.py --mock
+   ```
 ## Testing
 
 You can simulate a flowcell using the MinKnow API, which is quite fun!
