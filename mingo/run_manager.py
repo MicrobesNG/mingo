@@ -28,8 +28,18 @@ class MockSlimsClient:
         return {
             "run": {"pk": run_pk, "xprn_name": f"MOCK_RUN_{run_pk:02d}"},
             "inputs": [
-                {"cntn_id": "SAMPLE_A", "cntn_cf_barcode": "barcode01"},
-                {"cntn_id": "SAMPLE_B", "cntn_cf_barcode": "barcode02"}
+                {
+                    "cntn_id": "SAMPLE_A", 
+                    "barcode_i7": "NB01", 
+                    "cntn_cf_taxon": "Escherichia coli",
+                    "cntn_cf_genomeSizeMb": 5.1
+                },
+                {
+                    "cntn_id": "SAMPLE_B", 
+                    "barcode_i7": "NB02",
+                    "cntn_cf_taxon": "Staphylococcus aureus",
+                    "cntn_cf_genomeSizeMb": 2.8
+                }
             ]
         }
 
@@ -56,6 +66,8 @@ def get_input(prompt, options=None):
 def main():
     parser = argparse.ArgumentParser(description="ONT Run Manager")
     parser.add_argument("--mock", action="store_true", help="Run in mock mode without connecting to external systems.")
+    parser.add_argument("--host", default="localhost", help="MinKNOW host (default: localhost)")
+    parser.add_argument("--port", type=int, default=None, help="MinKNOW port (optional)")
     args = parser.parse_args()
 
     print("\n--- ONT Run Manager ---\n")
@@ -76,7 +88,7 @@ def main():
             sys.exit(1)
 
         slims = SlimsClient(slims_url, slims_user, slims_pass)
-        minknow = MinKNOWClient() # Defaults to localhost
+        minknow = MinKNOWClient(host=args.host, port=args.port) # Use provided host/port
 
     # 2. Select Position
     print("Checking sequencer positions...")
@@ -180,9 +192,33 @@ def main():
                 run_name=run_name
             )
         else:
-             # Real implementation would go here
-             # minknow.start_run(...)
-             pass
+             # Real implementation: List available protocols and let user choose
+             print("Fetching available protocols...")
+             protocols = minknow.list_protocols(selected_pos['name'])
+             if not protocols:
+                 print("No protocols found for this position.")
+                 sys.exit(1)
+             
+             # Filter or search for a sequencing protocol if needed
+             # For now, let the user choose from the list
+             print(f"\nFound {len(protocols)} protocols:")
+             for idx, p in enumerate(protocols):
+                 print(f" - {idx + 1}) {p}")
+             
+             proto_choice = get_input("Please choose a protocol (number) or 'q' to quit:", 
+                                     options=[str(i+1) for i in range(len(protocols))] + ['q'])
+             
+             if proto_choice == 'q':
+                 sys.exit(0)
+             
+             selected_proto = protocols[int(proto_choice) - 1]
+             
+             minknow.start_run(
+                position_name=selected_pos['name'],
+                protocol_id=selected_proto,
+                sample_sheet=filepath,
+                run_name=run_name
+            )
         print("Run successfully started!")
     else:
         print("Aborted.")

@@ -43,17 +43,35 @@ class SampleSheetGenerator:
             
             # Note: sample_id is often left blank in the example, alias is populated.
             
+            # Extract barcode info collected during tracing
+            barcode_i7 = sample.get('barcode_i7', '')
+            barcode_name = ''
+            if barcode_i7.startswith('NB'):
+                try:
+                    idx = int(barcode_i7[2:])
+                    barcode_name = f"barcode{idx:02d}"
+                except ValueError:
+                    barcode_name = barcode_i7
+            elif barcode_i7.startswith('BC'):
+                try:
+                    idx = int(barcode_i7[2:])
+                    barcode_name = f"barcode{idx:02d}"
+                except ValueError:
+                    barcode_name = barcode_i7
+            else:
+                barcode_name = sample.get('cntn_barCode', '')
+
             row = {
                 "flow_cell_id": flow_cell_id,
                 "position_id": position_id,
-                "sample_id": "", # Intentionally empty as per example?
+                "sample_id": "", # Intentionally empty as per example
                 "experiment_id": experiment_id,
                 "flow_cell_product_code": flow_cell_product_code,
                 "kit": kit,
-                "alias": sample.get('cntn_id', ''), # using cntn_id as alias as per example
-                "type": "test_sample", # Defaulting to test_sample
-                "barcode": sample.get('cntn_cf_barcode', ''), # Assuming a field for barcode
-                "cntn_cf_fk_barcode_i7": sample.get('cntn_cf_fk_barcode_i7', ''),
+                "alias": sample.get('cntn_id', ''), 
+                "type": "test_sample", 
+                "barcode": barcode_name,
+                "cntn_cf_fk_barcode_i7": barcode_i7,
                 "cntn_id": sample.get('cntn_id', ''),
                 "cntn_cf_taxon": sample.get('cntn_cf_taxon', ''),
                 "cntn_cf_genomeSizeMb": sample.get('cntn_cf_genomeSizeMb', ''),

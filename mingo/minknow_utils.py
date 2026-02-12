@@ -35,7 +35,7 @@ class MinKNOWClient:
                     # Connection is needed to check flow cell info
                     connection = pos.connect()
                     # Check flow cell info
-                    fc_info = connection.flow_cell.get_flow_cell_info()
+                    fc_info = connection.device.get_flow_cell_info()
                     flow_cell_id = fc_info.flow_cell_id
                     
                     # Check run state
