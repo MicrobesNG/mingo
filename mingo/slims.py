@@ -63,36 +63,49 @@ class SlimsClient:
 
             # 2. Fetch runs for these templates that are 'Ready'
             template_criteria = []
-            for tpk in template_pks:
-                template_criteria.append({
-                    "fieldName": "xprn_fk_experimentTemplate",
-                    "operator": "equals",
-                    "value": tpk
-                })
+            # 2. Find runs that are not completed/cancelled for these templates
+            # Note: We use the 'or' structure for multiple templates to be safe
+            template_filters = [{"fieldName": "xprn_fk_experimentTemplate", "operator": "equals", "value": tpk} for tpk in template_pks]
             
-            run_filters = [
-                {
-                    "fieldName": "xprn_status", 
-                    "operator": "equals", 
-                    "value": "Ready" 
-                }
-            ]
-            
-            if len(template_criteria) > 1:
-                run_filters.append({
-                    "operator": "or",
-                    "criteria": template_criteria
-                })
-            else:
-                run_filters.append(template_criteria[0])
-
-            response = self._get("ExperimentRun/advanced", json={"criteria": {
+            run_criteria = {
                 "operator": "and",
-                "criteria": run_filters
-            }})
-            return [self._flatten_entity(e) for e in response.get('entities', [])]
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to fetch runs: {e}")
+                "criteria": [
+                    {"fieldName": "xprn_completed", "operator": "equals", "value": False},
+                    {"fieldName": "xprn_cancelled", "operator": "equals", "value": False},
+                    {"operator": "or", "criteria": template_filters}
+                ]
+            }
+            
+            runs_resp = self._get("ExperimentRun/advanced", json={"criteria": run_criteria})
+            all_potential_runs = [self._flatten_entity(e) for e in runs_resp.get('entities', [])]
+            
+            if not all_potential_runs:
+                return []
+                
+            # 3. Filter for runs that have at least one non-DONE step
+            # We can do this by fetching all steps for these runs and checking statuses
+            # For efficiency in a real environment, we'd batch this.
+            queued_runs = []
+            for run in all_potential_runs:
+                step_criteria = {
+                    "fieldName": "xprs_fk_experimentRun",
+                    "operator": "equals",
+                    "value": run['pk']
+                }
+                steps_resp = self._get("ExperimentRunStep/advanced", json={"criteria": step_criteria})
+                steps = [self._flatten_entity(s) for s in steps_resp.get('entities', [])]
+                
+                # If there are no steps, it's probably new/queued
+                # If there are steps, at least one must be NOT DONE
+                if not steps or any(s.get('xprs_status') != 'DONE' for s in steps):
+                    queued_runs.append(run)
+            
+            # Sort by name/create date (newest first)
+            queued_runs.sort(key=lambda x: x.get('xprn_createdOn', 0), reverse=True)
+            return queued_runs
+            
+        except Exception as e:
+            print(f"Error fetching runs from SLIMS: {e}")
             return []
 
     def _trace_ingredients(self, content_pk: int, depth: int = 0, metadata: Dict = None) -> List[Dict]:

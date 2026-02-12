@@ -46,8 +46,8 @@ class MockSlimsClient:
 class MockMinKNOWClient:
     def get_positions(self):
         return [
-            {"name": "1A", "running": False, "flow_cell_id": "SIM_MOCK_1"},
-            {"name": "1B", "running": True, "flow_cell_id": "SIM_MOCK_2"}
+            {"name": "1A", "status": "Ready", "running": False, "flow_cell_id": "SIM_MOCK_1"},
+            {"name": "1B", "status": "Running", "running": True, "flow_cell_id": "SIM_MOCK_2"}
         ]
 
     def start_run(self, position_name, protocol_id, sample_sheet, run_name):
@@ -99,8 +99,7 @@ def main():
         
     print(f"\nFound {len(positions)} positions:")
     for idx, pos in enumerate(positions):
-        status = "Running" if pos['running'] else "Ready"
-        # In a real scenario, flow_cell_id might be None if not loaded
+        status = pos.get('status', 'Unknown')
         fc_id = pos.get('flow_cell_id', 'Unknown')
         print(f" - {idx + 1}) {pos['name']}, Flowcell ID: {fc_id}, Status: {status}")
 

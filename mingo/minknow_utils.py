@@ -20,36 +20,39 @@ class MinKNOWClient:
         positions = []
         try:
             for pos in self.manager.flow_cell_positions():
-                # Extract relevant info
-                # pos has .name, .running, .flow_cell (maybe?)
-                # We need to connect to get detailed status/flow cell info if not available directly
-                # flowcell_health.py suggests pos.connect() is needed for deep info, 
-                # but pos object itself has some info.
-                
-                # Check if a flow cell is present
-                # Use a try-except block as connection might fail or properties might be missing
-                state = "Unknown"
+                status = "Ready"
                 flow_cell_id = None
                 
                 try:
-                    # Connection is needed to check flow cell info
                     connection = pos.connect()
+                    
                     # Check flow cell info
                     fc_info = connection.device.get_flow_cell_info()
                     flow_cell_id = fc_info.flow_cell_id
                     
-                    # Check run state
-                    run_info = connection.protocol.get_run_info()
-                    if run_info.state == 1: # PROTOCOL_RUNNING - just a guess, need to verify enum
-                         # Actually flow_cell_health.py uses pos.running boolean
-                         pass
+                    if not flow_cell_id:
+                        status = "No Flow Cell"
+                    else:
+                        # Check run state
+                        run_info = connection.protocol.get_run_info()
+                        # Use the protocol state enum name for a descriptive status
+                        state_name = connection.protocol._pb.ProtocolState.Name(run_info.state)
+                        if state_name == "PROTOCOL_RUNNING":
+                             status = "Running"
+                        elif state_name == "PROTOCOL_COMPLETED":
+                             status = "Ready"
+                        else:
+                             # Map other states to something readable
+                             status = state_name.replace("PROTOCOL_", "").capitalize()
                          
                 except Exception as e:
                     logger.warning(f"Failed to get details for position {pos.name}: {e}")
+                    status = "Error/Offline"
                 
                 positions.append({
                     "name": pos.name,
-                    "running": pos.running,
+                    "status": status,
+                    "running": status == "Running",
                     "flow_cell_id": flow_cell_id
                 })
         except Exception as e:
