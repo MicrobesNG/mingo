@@ -3,6 +3,8 @@ import os
 import sys
 import argparse
 import logging
+import json
+import glob
 
 try:
     from slims import SlimsClient
@@ -50,8 +52,16 @@ class MockMinKNOWClient:
             {"name": "1B", "status": "Running", "running": True, "flow_cell_id": "SIM_MOCK_2"}
         ]
 
-    def start_run(self, position_name, protocol_id, sample_sheet, run_name):
+    def start_run(self, position_name, protocol_id, sample_sheet_path, run_name, settings=None):
         print(f"[MOCK] Started run {run_name} on {position_name} using {protocol_id}")
+        if settings:
+             print(f"[MOCK] Applied settings from template: {settings.get('script', {}).get('name', 'custom')}")
+             if settings.get('customBarcodesSelection'):
+                 print(f"[MOCK] Dynamic Barcode Selection: {settings['customBarcodesSelection']}")
+             
+             # Show full settings in mock if debug is on
+             if logging.getLogger().isEnabledFor(logging.DEBUG):
+                 print(f"[DEBUG][MOCK] Full Protocol Settings: {json.dumps(settings, indent=2)}")
 
 def get_input(prompt, options=None):
     while True:
@@ -68,7 +78,16 @@ def main():
     parser.add_argument("--mock", action="store_true", help="Run in mock mode without connecting to external systems.")
     parser.add_argument("--host", default="localhost", help="MinKNOW host (default: localhost)")
     parser.add_argument("--port", type=int, default=None, help="MinKNOW port (optional)")
+    parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging and show detailed protocol parameters.")
     args = parser.parse_args()
+
+    # Configure logging
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # Also update the logger in minknow_utils if it was already initialized
+    from minknow_utils import logger as minknow_logger
+    minknow_logger.setLevel(log_level)
 
     print("\n--- ONT Run Manager ---\n")
     
@@ -103,13 +122,18 @@ def main():
         fc_id = pos.get('flow_cell_id', 'Unknown')
         print(f" - {idx + 1}) {pos['name']}, Flowcell ID: {fc_id}, Status: {status}")
 
-    pos_choice = get_input("Please confirm which position the library is loaded into (number) or type 'q' to quit:", 
-                          options=[str(i+1) for i in range(len(positions))] + ['q'])
-    
-    if pos_choice == 'q':
-        sys.exit(0)
+    while True:
+        pos_choice = get_input("Please confirm which position the library is loaded into (number) or type 'q' to quit:", 
+                              options=[str(i+1) for i in range(len(positions))] + ['q'])
         
-    selected_pos = positions[int(pos_choice) - 1]
+        if pos_choice == 'q':
+            sys.exit(0)
+            
+        selected_pos = positions[int(pos_choice) - 1]
+        if selected_pos.get('running'):
+            print(f"!! Error: Position {selected_pos['name']} is already running a protocol. Please choose an idle position.")
+            continue
+        break
     
     # 3. Select Kit
     print("\nAvailable Kits:")
@@ -172,12 +196,58 @@ def main():
     with open(filepath, 'w') as f:
         f.write(csv_content)
         
-    # 6. Confirm and Start
+    # 6. Select Settings Template
+    print("\nSettings Templates:")
+    template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+    template_files = glob.glob(os.path.join(template_dir, "*.json"))
+    
+    if not template_files:
+        print(f" - No templates found in {template_dir}. Using defaults.")
+        selected_settings = {}
+    else:
+        for idx, fpath in enumerate(template_files):
+            print(f" - {idx + 1}) {os.path.basename(fpath)}")
+        
+        tpl_choice = get_input("Choose a settings template (number) or 'n' for none:", 
+                              options=[str(i+1) for i in range(len(template_files))] + ['n'])
+        
+        if tpl_choice == 'n':
+            selected_settings = {}
+        else:
+            with open(template_files[int(tpl_choice) - 1], 'r') as f:
+                selected_settings = json.load(f)
+
+    # 7. Dynamic Barcode Detection
+    if samples and all('barcode_i7' in s for s in samples):
+        barcodes = []
+        for s in samples:
+            b = s.get('barcode_i7', '')
+            # Extract number from NB01, BC01, etc.
+            if b and (b.startswith('NB') or b.startswith('BC')):
+                try:
+                    barcodes.append(int(b[2:]))
+                except ValueError:
+                    pass
+        
+        if barcodes:
+            barcodes.sort()
+            # If they are contiguous, use range, else list
+            if len(barcodes) > 1 and all(barcodes[i] == barcodes[i-1] + 1 for i in range(1, len(barcodes))):
+                barcode_range = f"{barcodes[0]}-{barcodes[-1]}"
+            else:
+                barcode_range = ",".join(map(str, barcodes))
+            
+            print(f" - Detected barcode range: {barcode_range}")
+            selected_settings['customBarcodesSelection'] = barcode_range
+            selected_settings['barcodingEnabled'] = True
+
+    # 8. Confirm and Start
     print(f"\nReady to start run '{run_name}' on {selected_pos['name']} using kit {selected_kit['code']}.")
     print("Parameters:")
     print(f" - Samples: {len(samples)}")
     print(f" - Sample Sheet: {filepath}")
-    # Add more parameters verification here
+    if selected_settings.get('customBarcodesSelection'):
+        print(f" - Barcodes: {selected_settings['customBarcodesSelection']}")
     
     confirm = get_input("Please type 'Y' to confirm and start the run, or anything else to abort.")
     
@@ -187,36 +257,41 @@ def main():
              minknow.start_run(
                 position_name=selected_pos['name'],
                 protocol_id="MOCK_PROTOCOL",
-                sample_sheet=filepath,
-                run_name=run_name
+                sample_sheet_path=filepath,
+                run_name=run_name,
+                settings=selected_settings
             )
         else:
-             # Real implementation: List available protocols and let user choose
-             print("Fetching available protocols...")
-             protocols = minknow.list_protocols(selected_pos['name'])
-             if not protocols:
-                 print("No protocols found for this position.")
-                 sys.exit(1)
+             # Real implementation: Get protocol from settings or let user choose
+             selected_proto = selected_settings.get('script', {}).get('identifier')
              
-             # Filter or search for a sequencing protocol if needed
-             # For now, let the user choose from the list
-             print(f"\nFound {len(protocols)} protocols:")
-             for idx, p in enumerate(protocols):
-                 print(f" - {idx + 1}) {p}")
-             
-             proto_choice = get_input("Please choose a protocol (number) or 'q' to quit:", 
-                                     options=[str(i+1) for i in range(len(protocols))] + ['q'])
-             
-             if proto_choice == 'q':
-                 sys.exit(0)
-             
-             selected_proto = protocols[int(proto_choice) - 1]
+             if not selected_proto:
+                 print("Fetching available protocols...")
+                 protocols = minknow.list_protocols(selected_pos['name'])
+                 if not protocols:
+                     print("No protocols found for this position.")
+                     sys.exit(1)
+                 
+                 print(f"\nFound {len(protocols)} protocols:")
+                 for idx, p in enumerate(protocols):
+                     print(f" - {idx + 1}) {p}")
+                 
+                 proto_choice = get_input("Please choose a protocol (number) or 'q' to quit:", 
+                                         options=[str(i+1) for i in range(len(protocols))] + ['q'])
+                 
+                 if proto_choice == 'q':
+                     sys.exit(0)
+                 
+                 selected_proto = protocols[int(proto_choice) - 1]
+             else:
+                 print(f"Using protocol from template: {selected_proto}")
              
              minknow.start_run(
                 position_name=selected_pos['name'],
                 protocol_id=selected_proto,
-                sample_sheet=filepath,
-                run_name=run_name
+                sample_sheet_path=filepath,
+                run_name=run_name,
+                settings=selected_settings
             )
         print("Run successfully started!")
     else:
