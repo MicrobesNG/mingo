@@ -1,7 +1,8 @@
 
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Sequence
 from minknow_api.manager import Manager
+from minknow_api.protocol_pb2 import BarcodeUserData
 
 
 logger = logging.getLogger(__name__)
@@ -74,15 +75,51 @@ class MinKNOWClient:
             logger.error(f"Failed to list protocols for {position_name}: {e}")
             return []
 
-    def start_run(self, position_name: str, protocol_id: str, sample_sheet_path: str, run_name: str, settings: Dict = None):
+    def start_run(self, position_name: str, protocol_id: str, sample_sheet_path: str, run_name: str = None, settings: dict = None, samples: list = None, kit: str = None):
         """
-        Start a sequencing run with comprehensive parameters from a settings template.
+        Start a protocol on a specific position.
+        
+        Args:
+            position_name: Name of the position (e.g., "1A")
+            protocol_id: The ID of the protocol to run
+            sample_sheet_path: Path to the sample sheet CSV
+            run_name: Optional name for the run
+            settings: Dictionary of run settings/parameters
+            samples: List of sample dictionaries from SLIMS
+            kit: Explicitly selected barcoding kit (e.g. SQK-RBK114-96)
         """
         from minknow_api.tools import protocols
+        
+        if not settings:
+            settings = {}
+            
+        logging.info(f"Connecting to position {position_name}...")
         
         if settings is None:
             settings = {}
             
+        barcode_user_info = []
+        if samples:
+            logger.info(f"Mapping {len(samples)} samples to barcode info")
+            for sample in samples:
+                user_data = BarcodeUserData()
+                user_data.alias = sample.get('cntn_id', '')
+                user_data.type = BarcodeUserData.SampleType.test_sample
+                
+                barcode_i7 = sample.get('barcode_i7', '')
+                if barcode_i7:
+                    # Map NB01/BC01 to barcode01 etc.
+                    if barcode_i7[:2] in ['NB', 'BC']:
+                        try:
+                            idx = int(barcode_i7[2:])
+                            user_data.barcode_name = f"barcode{idx:02d}"
+                        except ValueError:
+                            user_data.barcode_name = barcode_i7
+                    else:
+                        user_data.barcode_name = barcode_i7
+                
+                barcode_user_info.append(user_data)
+                
         try:
             pos = next(p for p in self.manager.flow_cell_positions() if p.name == position_name)
             connection = pos.connect()
@@ -90,8 +127,38 @@ class MinKNOWClient:
             # 1. Basecalling & Barcoding & Alignment
             barcoding_args = None
             if settings.get("barcodingEnabled"):
+                # Extract kit from samples if available, otherwise fallback to settings
+                barcoding_kits = settings.get("barcodingExpansionKits", [])
+                
+                # Priority 1: Explicitly selected kit (from CLI)
+                if kit:
+                     logger.info(f"Using explicitly selected barcoding kit: {kit}")
+                     barcoding_kits = [kit]
+                else:
+                    # Priority 2: Extract from samples (SLIMS data)
+                    if samples and len(samples) > 0:
+                        # In SLIMS, the kit is often in 'kit' or 'cntn_cf_kit'
+                        # We'll check the first sample as all should be the same for a run position
+                        first_sample = samples[0]
+                        if logger.isEnabledFor(logging.DEBUG):
+                            pass # Kept structure if needed, or just remove.
+                            # logger.debug(f"DEBUG: First sample keys: ...") 
+                        
+                        # Attempt to find kit in likely fields
+                        sample_kit = first_sample.get('kit') or first_sample.get('cntn_cf_kit')
+                        if sample_kit:
+                            logger.info(f"Using barcoding kit from sample sheet: {sample_kit}")
+                            barcoding_kits = [sample_kit]
+                    
+                    # Priority 3: Fallback to template tags
+                    if not barcoding_kits:
+                         script_kit = settings.get("script", {}).get("tags", {}).get("kit")
+                         if script_kit:
+                             logger.info(f"Using barcoding kit from template script tags: {script_kit}")
+                             barcoding_kits = [script_kit]
+
                 barcoding_args = protocols.BarcodingArgs(
-                    kits=settings.get("barcodingExpansionKits", []),
+                    kits=barcoding_kits,
                     trim_barcodes=settings.get("trimBarcodesEnabled", False),
                     barcodes_both_ends=settings.get("requireBarcodesBothEnds", False)
                 )
@@ -108,7 +175,7 @@ class MinKNOWClient:
                 basecalling_args = protocols.BasecallingArgs(
                     simplex_model=settings.get("basecallModel"),
                     modified_models=settings.get("modifiedBasecallingModels"),
-                    stereo_model=None, # Default to None if not specified in template
+                    stereo_model=None, # Required positional argument
                     barcoding=barcoding_args,
                     alignment=alignment_args,
                     min_qscore=settings.get("readFilteringMinQscore")
@@ -128,25 +195,11 @@ class MinKNOWClient:
             if settings.get("bamEnabled"):
                 bam_args = protocols.OutputArgs(None, None)
 
-            # 3. Read Until (Adaptive Sampling)
-            read_until_args = None
-            if settings.get("adaptiveSamplingEnabled"):
-                read_until_args = protocols.ReadUntilArgs(
-                    filter_type="enrich" if settings.get("shouldEnrichAdaptiveSamplingRef") else "deplete",
-                    reference_files=[settings.get("enrichDepleteAdaptiveSamplingRefFile")] if settings.get("enrichDepleteAdaptiveSamplingRefFile") else [],
-                    bed_file=settings.get("enrichDepleteAdaptiveSamplingBedFile")
-                )
-
             # 4. Stop Criteria
             duration_hours = settings.get("runLengthHours", 72)
             stop_criteria = protocols.CriteriaValues(
                 runtime=int(duration_hours * 3600)
             )
-
-            # 5. Extra Arguments (like sample sheet and experiment ID)
-            extra_args = [f"--sample_sheet={sample_sheet_path}"]
-            if run_name:
-                extra_args.append(f"--experiment_id={run_name}")
 
             # 6. Simulation Path (needs to be a Path object)
             from pathlib import Path
@@ -162,11 +215,15 @@ class MinKNOWClient:
                 logger.debug(f"Basecalling: {basecalling_args}")
                 logger.debug(f"Barcoding: {barcoding_args}")
                 logger.debug(f"Alignment: {alignment_args}")
-                logger.debug(f"Read Until: {read_until_args}")
+                logger.debug(f"Read Until: None")
                 logger.debug(f"Output: FASTQ={fastq_args}, POD5={pod5_args}, BAM={bam_args}")
                 logger.debug(f"Duration: {duration_hours}h")
-                logger.debug(f"Extra Args: {extra_args}")
+                logger.debug(f"Extra Args: None")
                 logger.debug(f"Simulation Path: {sim_path}")
+                if barcode_user_info:
+                    logger.debug(f"Barcode Info Map ({len(barcode_user_info)} barcodes):")
+                    for b in barcode_user_info:
+                        logger.debug(f"  - {b.alias} -> {b.barcode_name}")
                 logger.debug("---------------------------")
 
             logger.info(f"Starting protocol {protocol_id} on {position_name} using standard tools")
@@ -174,18 +231,15 @@ class MinKNOWClient:
             run_id = protocols.start_protocol(
                 connection,
                 identifier=protocol_id,
-                sample_id="", # This goes into user_info
-                experiment_group=run_name, # This goes into user_info
-                barcode_info=None,
+                sample_id="",
+                experiment_group=run_name,
+                barcode_info=barcode_user_info,
                 basecalling=basecalling_args,
-                read_until=read_until_args,
                 fastq_arguments=fastq_args,
                 pod5_arguments=pod5_args,
-                bam_arguments=bam_args,
-                mux_scan_period=settings.get("muxScanPeriod", 1.5),
                 stop_criteria=stop_criteria,
                 simulation_path=sim_path,
-                args=extra_args
+                offload_location_info=None
             )
             
             return run_id

@@ -52,16 +52,33 @@ class MockMinKNOWClient:
             {"name": "1B", "status": "Running", "running": True, "flow_cell_id": "SIM_MOCK_2"}
         ]
 
-    def start_run(self, position_name, protocol_id, sample_sheet_path, run_name, settings=None):
+    def start_run(self, position_name, protocol_id, sample_sheet_path, run_name, settings=None, samples=None):
         print(f"[MOCK] Started run {run_name} on {position_name} using {protocol_id}")
         if settings:
-             print(f"[MOCK] Applied settings from template: {settings.get('script', {}).get('name', 'custom')}")
-             if settings.get('customBarcodesSelection'):
-                 print(f"[MOCK] Dynamic Barcode Selection: {settings['customBarcodesSelection']}")
+            print(f"[MOCK] Applied settings from template: {settings.get('script', {}).get('name', 'custom')}")
+            if settings.get('customBarcodesSelection'):
+                print(f"[MOCK] Dynamic Barcode Selection: {settings['customBarcodesSelection']}")
+        
+        if settings and settings.get("barcodingExpansionKits"):
+             print(f"[MOCK] Barcoding Kits: {settings['barcodingExpansionKits']}")
+ 
+        if samples:
+            print(f"[MOCK] Barcode Info Mapping ({len(samples)} samples):")
+            for sample in samples:
+                alias = sample.get('cntn_id', '')
+                barcode = sample.get('barcode_i7', '')
+                barcode_name = barcode
+                if barcode and barcode[:2] in ['NB', 'BC']:
+                    try:
+                        idx = int(barcode[2:])
+                        barcode_name = f"barcode{idx:02d}"
+                    except ValueError:
+                        pass
+                print(f"   - {alias} -> {barcode_name}")
              
-             # Show full settings in mock if debug is on
-             if logging.getLogger().isEnabledFor(logging.DEBUG):
-                 print(f"[DEBUG][MOCK] Full Protocol Settings: {json.dumps(settings, indent=2)}")
+        # Show full settings in mock if debug is on
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            print(f"[DEBUG][MOCK] Full Protocol Settings: {json.dumps(settings, indent=2)}")
 
 def get_input(prompt, options=None):
     while True:
@@ -259,7 +276,9 @@ def main():
                 protocol_id="MOCK_PROTOCOL",
                 sample_sheet_path=filepath,
                 run_name=run_name,
-                settings=selected_settings
+                settings=selected_settings,
+                samples=samples,
+                kit=selected_kit['code']
             )
         else:
              # Real implementation: Get protocol from settings or let user choose
@@ -291,7 +310,9 @@ def main():
                 protocol_id=selected_proto,
                 sample_sheet_path=filepath,
                 run_name=run_name,
-                settings=selected_settings
+                settings=selected_settings,
+                samples=samples,
+                kit=selected_kit['code']
             )
         print("Run successfully started!")
     else:
