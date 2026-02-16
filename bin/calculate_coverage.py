@@ -3,8 +3,9 @@ import json
 import csv
 import sys
 import os
+import argparse
 
-def calculate_coverage(csv_path, json_path):
+def calculate_coverage(csv_path, json_path, filter_below_coverage=None, output_csv=False):
     # 1. Parse CSV
     samples = {}
     csv_exp_id = None
@@ -46,13 +47,11 @@ def calculate_coverage(csv_path, json_path):
     for acq in data.get('acquisitions', []):
         for out in acq.get('acquisition_output', []):
             if out.get('type') == 'SplitByBarcode':
-                # The structure is out['plot'][0]['snapshots'] -> list of barcode objects
                 plot_data = out.get('plot', [])
                 if not plot_data: continue
                 
                 barcode_plot_snapshots = plot_data[0].get('snapshots', [])
                 for barcode_entry in barcode_plot_snapshots:
-                    # Find barcode name in filtering
                     barcode_name = None
                     for filt in barcode_entry.get('filtering', []):
                         if 'barcode_name' in filt:
@@ -60,21 +59,22 @@ def calculate_coverage(csv_path, json_path):
                             break
                     if not barcode_name: continue
                     
-                    # Last snapshot has total yield for this specific barcode in this acquisition
                     snaps = barcode_entry.get('snapshots', [])
                     if snaps:
                         last_snap = snaps[-1]
                         bases_str = last_snap.get('yield_summary', {}).get('basecalled_pass_bases', "0")
                         bases = int(bases_str)
-                        # Accumulate in case of multiple SplitByBarcode outputs (e.g. across multiple acquisitions)
                         yields[barcode_name] = yields.get(barcode_name, 0) + bases
 
     # 3. Calculate and Output
-    # Header
-    print(f"{'barcode_alias':<20} {'native barcode name':<20} {'total reads (Mb)':<20} {'expected genome (Mb)':<20} {'total coverage':<15}")
-    print("-" * 95)
+    if output_csv:
+        writer = csv.writer(sys.stdout)
+        writer.writerow(['barcode_alias', 'barcode_name', 'total_reads_mb', 'expected_genome_mb', 'coverage'])
+    else:
+        header = f"{'barcode_alias':<20} {'native barcode name':<20} {'total reads (Mb)':<20} {'expected genome (Mb)':<20} {'total coverage':<15}"
+        print(header)
+        print("-" * 95)
     
-    # Sort by barcode name (e.g. barcode01, barcode02...)
     for barcode, info in sorted(samples.items()):
         total_bases = yields.get(barcode, 0)
         total_mb = total_bases / 1_000_000
@@ -82,27 +82,43 @@ def calculate_coverage(csv_path, json_path):
         
         coverage = total_mb / genome_mb if genome_mb > 0 else 0
         
-        # Precision: integer if >= 1, else single precision
-        if coverage >= 1:
-            cov_str = f"{int(round(coverage))}"
-        else:
-            cov_str = f"{coverage:.1f}"
+        # Filtering
+        if filter_below_coverage is not None and coverage >= filter_below_coverage:
+            continue
             
-        print(f"{info['alias']:<20} {barcode:<20} {total_mb:<20.2f} {genome_mb:<20.2f} {cov_str:<15}")
+        if output_csv:
+            writer.writerow([info['alias'], barcode, f"{total_mb:.2f}", f"{genome_mb:.2f}", f"{coverage:.2f}"])
+        else:
+            # Truncate alias for better table formatting
+            alias = info['alias']
+            if len(alias) > 17:
+                alias = alias[:14] + "..."
+                
+            # Precision: integer if >= 1, else single precision
+            if coverage >= 1:
+                cov_str = f"{int(round(coverage))}"
+            else:
+                cov_str = f"{coverage:.1f}"
+                
+            print(f"{alias:<20} {barcode:<20} {total_mb:<20.2f} {genome_mb:<20.2f} {cov_str:<15}")
 
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: calculate_coverage.py <samples.csv> <report.json>")
-        sys.exit(1)
+def main():
+    parser = argparse.ArgumentParser(description="Calculate genome coverage from ONT reports and sample sheets.")
+    parser.add_argument("csv_path", help="Path to the sample sheet CSV file.")
+    parser.add_argument("json_path", help="Path to the sequencing report JSON file.")
+    parser.add_argument("--below", type=int, help="Only output lines where coverage is below this value.")
+    parser.add_argument("--csv", action="store_true", help="Output in CSV format.")
     
-    csv_arg = sys.argv[1]
-    json_arg = sys.argv[2]
+    args = parser.parse_args()
     
-    if not os.path.exists(csv_arg):
-        print(f"Error: CSV file not found: {csv_arg}")
+    if not os.path.exists(args.csv_path):
+        print(f"Error: CSV file not found: {args.csv_path}")
         sys.exit(1)
-    if not os.path.exists(json_arg):
-        print(f"Error: JSON file not found: {json_arg}")
+    if not os.path.exists(args.json_path):
+        print(f"Error: JSON file not found: {args.json_path}")
         sys.exit(1)
         
-    calculate_coverage(csv_arg, json_arg)
+    calculate_coverage(args.csv_path, args.json_path, filter_below_coverage=args.below, output_csv=args.csv)
+
+if __name__ == "__main__":
+    main()
