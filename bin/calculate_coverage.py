@@ -94,13 +94,9 @@ def calculate_coverage(csv_path, json_path, filter_below_coverage=None, output_c
             if len(alias) > 17:
                 alias = alias[:14] + "..."
                 
-            # Precision: integer if >= 1, else single precision
-            if coverage >= 1:
-                cov_str = f"{int(round(coverage))}"
-            else:
-                cov_str = f"{coverage:.1f}"
-                
-            print(f"{alias:<20} {barcode:<20} {total_mb:<20.2f} {genome_mb:<20.2f} {cov_str:<15}")
+            cov_str = f"{coverage:.1f}"
+            
+            print(f"{alias:<20} {barcode:<20} {total_mb:>20.2f} {genome_mb:>20.2f} {cov_str:>15}")
 
 def main():
     parser = argparse.ArgumentParser(description="Calculate genome coverage from ONT reports and sample sheets.")
