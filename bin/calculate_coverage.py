@@ -5,7 +5,7 @@ import sys
 import os
 import argparse
 
-def calculate_coverage(csv_path, json_path, filter_below_coverage=None, output_csv=False):
+def calculate_coverage(csv_path, json_path=None, summary_path=None, filter_below_coverage=None, output_csv=False, threshold=7000):
     # 1. Parse CSV
     samples = {}
     csv_exp_id = None
@@ -27,82 +27,168 @@ def calculate_coverage(csv_path, json_path, filter_below_coverage=None, output_c
         print(f"Error reading CSV: {e}")
         sys.exit(1)
 
-    # 2. Parse JSON
-    try:
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-    except Exception as e:
-        print(f"Error reading JSON: {e}")
-        sys.exit(1)
-    
-    json_exp_id = data.get('protocol_run_info', {}).get('user_info', {}).get('protocol_group_id')
-    
-    # Validation
-    if csv_exp_id != json_exp_id:
-        print(f"Error: Run mismatch. CSV experiment_id ({csv_exp_id}) != JSON protocol_group_id ({json_exp_id})")
-        sys.exit(1)
+    yields = {} # Stores base counts and read distribution
+    # Structure: { barcode: {'bases': 0, 'reads': 0, 'short_bases': 0, 'short_reads': 0, 'long_bases': 0, 'long_reads': 0} }
 
-    # Extract Yields
-    yields = {}
-    for acq in data.get('acquisitions', []):
-        for out in acq.get('acquisition_output', []):
-            if out.get('type') == 'SplitByBarcode':
-                plot_data = out.get('plot', [])
-                if not plot_data: continue
-                
-                barcode_plot_snapshots = plot_data[0].get('snapshots', [])
-                for barcode_entry in barcode_plot_snapshots:
-                    barcode_name = None
-                    for filt in barcode_entry.get('filtering', []):
-                        if 'barcode_name' in filt:
-                            barcode_name = filt['barcode_name']
-                            break
-                    if not barcode_name: continue
+    # 2. Parse Reports
+    if summary_path:
+        try:
+            with open(summary_path, 'r') as f:
+                reader = csv.DictReader(f, delimiter='\t')
+                for row in reader:
+                    # Validation: check experiment_id if available
+                    if csv_exp_id and row.get('experiment_id') != csv_exp_id:
+                        # Optional: check some percentage or first row to avoid spamming or exit?
+                        # For now just warn once if mismatch
+                        pass
+
+                    barcode = row.get('barcode_arrangement')
+                    if not barcode: continue
                     
-                    snaps = barcode_entry.get('snapshots', [])
-                    if snaps:
-                        last_snap = snaps[-1]
-                        bases_str = last_snap.get('yield_summary', {}).get('basecalled_pass_bases', "0")
-                        bases = int(bases_str)
-                        yields[barcode_name] = yields.get(barcode_name, 0) + bases
+                    if row.get('passes_filtering') != 'TRUE':
+                        continue
+                    
+                    try:
+                        length = int(row.get('sequence_length_template', 0))
+                    except ValueError:
+                        length = 0
+
+                    if barcode not in yields:
+                        yields[barcode] = {'bases': 0, 'reads': 0, 'short_bases': 0, 'short_reads': 0, 'long_bases': 0, 'long_reads': 0}
+                    
+                    yields[barcode]['bases'] += length
+                    yields[barcode]['reads'] += 1
+                    
+                    if length < threshold:
+                        yields[barcode]['short_bases'] += length
+                        yields[barcode]['short_reads'] += 1
+                    else:
+                        yields[barcode]['long_bases'] += length
+                        yields[barcode]['long_reads'] += 1
+        except Exception as e:
+            print(f"Error reading summary: {e}")
+            sys.exit(1)
+
+    elif json_path:
+        try:
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            
+            json_exp_id = data.get('protocol_run_info', {}).get('user_info', {}).get('protocol_group_id')
+            if csv_exp_id and json_exp_id and csv_exp_id != json_exp_id:
+                print(f"Error: Run mismatch. CSV experiment_id ({csv_exp_id}) != JSON protocol_group_id ({json_exp_id})")
+                sys.exit(1)
+
+            for acq in data.get('acquisitions', []):
+                for out in acq.get('acquisition_output', []):
+                    if out.get('type') == 'SplitByBarcode':
+                        plot_data = out.get('plot', [])
+                        if not plot_data: continue
+                        
+                        barcode_plot_snapshots = plot_data[0].get('snapshots', [])
+                        for barcode_entry in barcode_plot_snapshots:
+                            barcode_name = None
+                            for filt in barcode_entry.get('filtering', []):
+                                if 'barcode_name' in filt:
+                                    barcode_name = filt['barcode_name']
+                                    break
+                            if not barcode_name: continue
+                            
+                            snaps = barcode_entry.get('snapshots', [])
+                            if snaps:
+                                last_snap = snaps[-1]
+                                bases = int(last_snap.get('yield_summary', {}).get('basecalled_pass_bases', "0"))
+                                reads = int(last_snap.get('yield_summary', {}).get('basecalled_pass_read_count', "0"))
+                                
+                                if barcode_name not in yields:
+                                    yields[barcode_name] = {'bases': 0, 'reads': 0, 'short_bases': 0, 'short_reads': 0, 'long_bases': 0, 'long_reads': 0}
+                                
+                                # Note: JSON only gives total bases/reads, no distribution
+                                yields[barcode_name]['bases'] += bases
+                                yields[barcode_name]['reads'] += reads
+        except Exception as e:
+            print(f"Error reading JSON: {e}")
+            sys.exit(1)
+    else:
+        print("Error: Either --json or --summary must be provided.")
+        sys.exit(1)
 
     # 3. Calculate and Output
+    cols = ['alias', 'barcode', 'total_mb', 'genome_mb', 'coverage']
+    if summary_path:
+        cols += ['avg_len', 'short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len']
+
+    thresh_kb = f"{threshold/1000:g}kb"
     if output_csv:
         writer = csv.writer(sys.stdout)
-        writer.writerow(['barcode_alias', 'barcode_name', 'total_reads_mb', 'expected_genome_mb', 'coverage'])
+        # Update column names for CSV too
+        csv_cols = [c if c not in ['short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len'] else 
+                    c.replace('short', f'<{thresh_kb}').replace('long', f'>={thresh_kb}') for c in cols]
+        writer.writerow(csv_cols)
     else:
-        header = f"{'barcode_alias':<20} {'native barcode name':<20} {'total reads (Mb)':<20} {'expected genome (Mb)':<20} {'total coverage':<15}"
-        print(header)
-        print("-" * 95)
+        header_map = {
+            'alias': f"{'alias':<15}",
+            'barcode': f"{'barcode':<12}",
+            'total_mb': f"{'yield (Mb)':>10}",
+            'genome_mb': f"{'genome (Mb)':>12}",
+            'coverage': f"{'cov':>6}",
+            'avg_len': f"{'avg_len':>8}",
+            'short_total_mb': f"{f'<{thresh_kb} yield':>12}",
+            'short_avg_len': f"{f'<{thresh_kb} avg':>10}",
+            'long_total_mb': f"{f'>={thresh_kb} yield':>12}",
+            'long_avg_len': f"{f'>={thresh_kb} avg':>10}"
+        }
+        print(" ".join([header_map[c] for c in cols]))
+        print("-" * (120 if summary_path else 60))
     
     for barcode, info in sorted(samples.items()):
-        total_bases = yields.get(barcode, 0)
-        total_mb = total_bases / 1_000_000
-        genome_mb = info['genome_size_mb']
+        y = yields.get(barcode, {'bases': 0, 'reads': 0, 'short_bases': 0, 'short_reads': 0, 'long_bases': 0, 'long_reads': 0})
         
+        total_mb = y['bases'] / 1_000_000
+        genome_mb = info['genome_size_mb']
         coverage = total_mb / genome_mb if genome_mb > 0 else 0
         
         # Filtering
         if filter_below_coverage is not None and coverage >= filter_below_coverage:
             continue
             
+        row_data = {
+            'alias': info['alias'][:12] + "..." if len(info['alias']) > 14 else info['alias'],
+            'barcode': barcode,
+            'total_mb': f"{total_mb:.2f}",
+            'genome_mb': f"{genome_mb:.2f}",
+            'coverage': f"{coverage:.1f}",
+            'avg_len': f"{int(y['bases']/y['reads'])}" if y['reads'] > 0 else "0",
+            'short_total_mb': f"{y['short_bases']/1_000_000:.2f}",
+            'short_avg_len': f"{int(y['short_bases']/y['short_reads'])}" if y['short_reads'] > 0 else "0",
+            'long_total_mb': f"{y['long_bases']/1_000_000:.2f}",
+            'long_avg_len': f"{int(y['long_bases']/y['long_reads'])}" if y['long_reads'] > 0 else "0"
+        }
+
         if output_csv:
-            writer.writerow([info['alias'], barcode, f"{total_mb:.2f}", f"{genome_mb:.2f}", f"{coverage:.2f}"])
+            writer.writerow([row_data[c] for c in cols])
         else:
-            # Truncate alias for better table formatting
-            alias = info['alias']
-            if len(alias) > 17:
-                alias = alias[:14] + "..."
-                
-            cov_str = f"{coverage:.1f}"
-            
-            print(f"{alias:<20} {barcode:<20} {total_mb:>20.2f} {genome_mb:>20.2f} {cov_str:>15}")
+            fmt_map = {
+                'alias': f"{row_data['alias']:<15}",
+                'barcode': f"{row_data['barcode']:<12}",
+                'total_mb': f"{row_data['total_mb']:>10}",
+                'genome_mb': f"{row_data['genome_mb']:>12}",
+                'coverage': f"{row_data['coverage']:>6}",
+                'avg_len': f"{row_data['avg_len']:>8}",
+                'short_total_mb': f"{row_data['short_total_mb']:>12}",
+                'short_avg_len': f"{row_data['short_avg_len']:>10}",
+                'long_total_mb': f"{row_data['long_total_mb']:>12}",
+                'long_avg_len': f"{row_data['long_avg_len']:>10}"
+            }
+            print(" ".join([fmt_map[c] for c in cols]))
 
 def main():
     parser = argparse.ArgumentParser(description="Calculate genome coverage from ONT reports and sample sheets.")
     parser.add_argument("csv_path", help="Path to the sample sheet CSV file.")
-    parser.add_argument("json_path", help="Path to the sequencing report JSON file.")
+    parser.add_argument("--json", help="Path to the sequencing report JSON file.")
+    parser.add_argument("--summary", help="Path to the sequencing summary TXT file.")
     parser.add_argument("--below", type=int, help="Only output lines where coverage is below this value.")
+    parser.add_argument("--threshold", type=int, default=7000, help="Read length threshold for binned stats (default: 7000).")
     parser.add_argument("--csv", action="store_true", help="Output in CSV format.")
     
     args = parser.parse_args()
@@ -110,11 +196,8 @@ def main():
     if not os.path.exists(args.csv_path):
         print(f"Error: CSV file not found: {args.csv_path}")
         sys.exit(1)
-    if not os.path.exists(args.json_path):
-        print(f"Error: JSON file not found: {args.json_path}")
-        sys.exit(1)
-        
-    calculate_coverage(args.csv_path, args.json_path, filter_below_coverage=args.below, output_csv=args.csv)
+    
+    calculate_coverage(args.csv_path, json_path=args.json, summary_path=args.summary, filter_below_coverage=args.below, output_csv=args.csv, threshold=args.threshold)
 
 if __name__ == "__main__":
     main()
