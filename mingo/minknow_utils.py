@@ -23,6 +23,7 @@ class MinKNOWClient:
             for pos in self.manager.flow_cell_positions():
                 status = "Ready"
                 flow_cell_id = None
+                fc_info = None
                 
                 try:
                     connection = pos.connect()
@@ -50,11 +51,17 @@ class MinKNOWClient:
                     logger.warning(f"Failed to get details for position {pos.name}: {e}")
                     status = "Error/Offline"
                 
+                # Extract product code
+                product_code = "UNKNOWN"
+                if fc_info:
+                    product_code = fc_info.product_code or fc_info.user_specified_product_code or "UNKNOWN"
+
                 positions.append({
                     "name": pos.name,
                     "status": status,
                     "running": status == "Running",
-                    "flow_cell_id": flow_cell_id
+                    "flow_cell_id": flow_cell_id,
+                    "product_code": product_code  
                 })
         except Exception as e:
             logger.error(f"Failed to list positions: {e}")
@@ -160,7 +167,8 @@ class MinKNOWClient:
                 barcoding_args = protocols.BarcodingArgs(
                     kits=barcoding_kits,
                     trim_barcodes=settings.get("trimBarcodesEnabled", False),
-                    barcodes_both_ends=settings.get("requireBarcodesBothEnds", False)
+                    barcodes_both_ends=settings.get("requireBarcodesBothEnds", False),
+                    ignore_unspecified_barcodes=True
                 )
 
             alignment_args = None
@@ -178,7 +186,7 @@ class MinKNOWClient:
                     stereo_model=None, # Required positional argument
                     barcoding=barcoding_args,
                     alignment=alignment_args,
-                    min_qscore=settings.get("readFilteringMinQscore")
+                    min_qscore=settings.get("readFilteringMinQscore"),
                 )
 
             # 2. Output Arguments
@@ -237,9 +245,19 @@ class MinKNOWClient:
                 basecalling=basecalling_args,
                 fastq_arguments=fastq_args,
                 pod5_arguments=pod5_args,
+                fast5_arguments=None,
+                bam_arguments=None,
+                disable_active_channel_selection=False,
                 stop_criteria=stop_criteria,
                 simulation_path=sim_path,
-                offload_location_info=None
+                offload_location_info=None,
+                args=["--split_files_by_barcode=on",
+                    "--split_pod5_files_by_barcode=on",
+                    "--generate_bulk_file=off",
+                    "--fastq_batch_duration=3600",
+                    "--pore_reserve=off",
+                    "--poly_a_tail_length_estimation=off",
+                    ]
             )
             
             return run_id

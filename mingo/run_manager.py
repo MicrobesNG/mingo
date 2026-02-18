@@ -48,8 +48,8 @@ class MockSlimsClient:
 class MockMinKNOWClient:
     def get_positions(self):
         return [
-            {"name": "1A", "status": "Ready", "running": False, "flow_cell_id": "SIM_MOCK_1"},
-            {"name": "1B", "status": "Running", "running": True, "flow_cell_id": "SIM_MOCK_2"}
+            {"name": "1A", "status": "Ready", "running": False, "flow_cell_id": "SIM_MOCK_1", "product_code": "FLO-MIN106"},
+            {"name": "1B", "status": "Running", "running": True, "flow_cell_id": "SIM_MOCK_2", "product_code": "FLO-PRO114"}
         ]
 
     def start_run(self, position_name, protocol_id, sample_sheet_path, run_name, settings=None, samples=None):
@@ -201,7 +201,8 @@ def main():
         samples=samples,
         flow_cell_id=selected_pos.get('flow_cell_id', 'UNKNOWN_FC'),
         position_id=selected_pos['name'],
-        kit=selected_kit['code']
+        kit=selected_kit['code'],
+        flow_cell_product_code=selected_pos.get('product_code', 'UNKNOWN_PC')
     )
     
     # Save sample sheet
