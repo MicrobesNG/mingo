@@ -3,6 +3,7 @@ import logging
 from typing import List, Dict, Optional, Sequence
 from minknow_api.manager import Manager
 from minknow_api.protocol_pb2 import BarcodeUserData
+from minknow_api.protocol_settings_pb2 import ProtocolSetting
 
 
 logger = logging.getLogger(__name__)
@@ -266,3 +267,38 @@ class MinKNOWClient:
             logger.error(f"Failed to start run on {position_name}: {e}")
             raise
 
+
+def to_protocol_setting_value(value):
+    """Converts a Python value to a ProtocolSettingValue message.
+
+    Args:
+        value (bool, int, float, str): The value to convert.
+
+    Returns:
+        minknow_api.protocol_settings_pb2.ProtocolSetting.ProtocolSettingValue: The converted value.
+    """
+    val = ProtocolSetting.ProtocolSettingValue()
+    if isinstance(value, bool):
+        val.bool_value = value
+    elif isinstance(value, int):
+        val.integer_value = value
+    elif isinstance(value, float):
+        val.float_value = value
+    elif isinstance(value, str):
+        val.string_value = value
+    else:
+        raise ValueError(f"Unsupported protocol setting value type: {type(value)}")
+    return val
+
+
+def to_protocol_settings(settings_dict):
+    """Converts a dictionary of settings to a map of ProtocolSettingValue messages.
+
+    Args:
+        settings_dict (dict): A dictionary where keys are setting identifiers and values are
+            Python values (bool, int, float, str).
+
+    Returns:
+        dict: A dictionary suitable for use in BeginProtocolRequest.settings.
+    """
+    return {key: to_protocol_setting_value(value) for key, value in settings_dict.items()}
