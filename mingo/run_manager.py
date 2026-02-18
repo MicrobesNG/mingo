@@ -96,6 +96,7 @@ def main():
     parser.add_argument("--host", default="localhost", help="MinKNOW host (default: localhost)")
     parser.add_argument("--port", type=int, default=None, help="MinKNOW port (optional)")
     parser.add_argument("-d", "--debug", action="store_true", help="Enable debug logging and show detailed protocol parameters.")
+    parser.add_argument("--start-run", action="store_true", help="Proceed to configure and start the MinKNOW run.")
     args = parser.parse_args()
 
     # Configure logging
@@ -214,6 +215,10 @@ def main():
     with open(filepath, 'w') as f:
         f.write(csv_content)
         
+    if not args.start_run:
+        print("\nSample sheet generated. (Use --start-run to proceed with MinKNOW protocol autostart.)")
+        return
+
     # 6. Select Settings Template
     print("\nSettings Templates:")
     template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
