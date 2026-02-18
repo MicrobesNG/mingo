@@ -8,7 +8,7 @@ Run manager and status tools for Oxford Nanopore P2 Solo sequencers.
  - `mingo/gridion_status.py` - show the current run status of all of the active flowcell positions in a local gridion (requires local guest mode enabled)
  - `mingo/flowcell_health.py` - show latest pore count for a flowcell and on which hosts it has been checked
  - `mingo/watch_gridion.py` - dynamic monitoring of sequencer status
- - `bin/calculate_coverage.py` - calculate genome coverage and read distribution from JSON reports or sequencing summaries
+ - `bin/mingo-coverage` - calculate genome coverage and read distribution from JSON reports or sequencing summaries
 
 ## Get Hacking
 
@@ -57,11 +57,11 @@ Calculate genome coverage and read distribution stats from sequencing data.
 
 ```bash
 # Using a sequencing summary (recommended for detailed stats)
-python3 bin/calculate_coverage.py samples.csv --summary summary.txt
+python3 bin/mingo-coverage samples.csv --summary summary.txt
 
 # Using a JSON report (basic yield only)
-python3 bin/calculate_coverage.py samples.csv --json report.json
+python3 bin/mingo-coverage samples.csv --json report.json
 
 # Using a custom read length threshold (default 7000bp)
-python3 bin/calculate_coverage.py samples.csv --summary summary.txt --threshold 5000
+python3 bin/mingo-coverage samples.csv --summary summary.txt --bin-threshold 5000
 ```

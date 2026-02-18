@@ -3,7 +3,7 @@ import csv
 import sys
 import os
 
-def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_below_coverage=None, output_csv=False, threshold=7000):
+def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_below_coverage=None, output_csv=False, bin_threshold=7000):
     # 1. Parse CSV
     samples = {}
     csv_exp_id = None
@@ -51,7 +51,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                     yields[barcode]['bases'] += length
                     yields[barcode]['reads'] += 1
                     
-                    if length < threshold:
+                    if length < bin_threshold:
                         yields[barcode]['short_bases'] += length
                         yields[barcode]['short_reads'] += 1
                     else:
@@ -109,7 +109,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
     if summary_path:
         cols += ['avg_len', 'short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len']
 
-    thresh_kb = f"{threshold/1000:g}kb"
+    thresh_kb = f"{bin_threshold/1000:g}kb"
     if output_csv:
         writer = csv.writer(sys.stdout)
         csv_cols = [c if c not in ['short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len'] else 
