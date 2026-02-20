@@ -1,0 +1,5 @@
+flow_cell_id,position_id,sample_id,experiment_id,flow_cell_product_code,kit,alias,type,barcode,cntn_cf_fk_barcode_i7,cntn_id,cntn_cf_taxon,cntn_cf_genomeSizeMb,cntn_cf_gcContent,cntn_cf_orderName,cntn_cf_stockConcentration,cntn_cf_stockConcentration_unit,cntn_cf_isUrgent,cntn_cf_lowMaterial
+SIM38353,S1,,TEST20260205_01_RUN,FLO-PRO114,SQK-RBK114-96,295354E,test_sample,barcode01,NB01,295354E,Pseudomonas aeruginosa,6.63,66.18,20241127_Ramayoni1E,27.09,ng/μl,false,false
+SIM38353,S1,,TEST20260205_01_RUN,FLO-PRO114,SQK-RBK114-96,323394E,test_sample,barcode02,NB02,323394E,Serratia odorifera,5.27,55.9,20251017_Barrett1E,41.22,ng/μl,false,false
+SIM38353,S1,,TEST20260205_01_RUN,FLO-PRO114,SQK-RBK114-96,326886E,test_sample,barcode03,NB03,326886E,Serratia marcescens,5.23,59.37,20251203_Williamson1E,49.06,ng/μl,true,false
+SIM38353,S1,,TEST20260205_01_RUN,FLO-PRO114,SQK-RBK114-96,326887E,test_sample,barcode04,NB04,326887E,Serratia marcescens,5.23,59.37,20251203_Williamson1E,54.67,ng/μl,true,false

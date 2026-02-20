@@ -1,0 +1,6 @@
+layout python python3.12
+
+#export MINKNOW_TRUSTED_CA=`pwd`/certs/ca.crt
+
+#export SLACK_HOOK="https://hooks.slack.com/services/XXXXXX/XXXXX/XXXXXXXX"
+
