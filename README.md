@@ -56,6 +56,10 @@ python -m minknow_api.examples.manage_simulated_devices --host <host|localhost> 
 Calculate genome coverage and read distribution stats from sequencing data.
 
 ```bash
+# Automatically find sample sheet and JSON report in an ONT run directory
+cd NSR_xxxx_timestamp_run_id
+python3 ../bin/mingo-coverage --auto
+
 # Using a sequencing summary (recommended for detailed stats)
 python3 bin/mingo-coverage samples.csv --summary summary.txt
 
