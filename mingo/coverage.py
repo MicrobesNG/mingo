@@ -3,7 +3,7 @@ import csv
 import sys
 import os
 
-def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_below_coverage=None, output_csv=False, bin_threshold=7000):
+def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_below_coverage=None, output_csv=False, bin_threshold=7000, no_low_material=False):
     # 1. Parse CSV
     samples = {}
     csv_exp_id = None
@@ -12,10 +12,14 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             reader = csv.DictReader(f)
             for row in reader:
                 barcode = row['barcode']
+                # Determine boolean value for low material, defaulting to False if missing or malformed
+                low_mat_val = str(row.get('cntn_cf_lowMaterial', '')).strip().lower() == 'true'
+                
                 samples[barcode] = {
                     'alias': row['alias'],
                     'genome_size_mb': float(row['cntn_cf_genomeSizeMb']) if row['cntn_cf_genomeSizeMb'] else 0,
-                    'experiment_id': row['experiment_id']
+                    'experiment_id': row['experiment_id'],
+                    'low_material': low_mat_val
                 }
                 if csv_exp_id is None:
                     csv_exp_id = row['experiment_id']
@@ -105,7 +109,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
         sys.exit(1)
 
     # 3. Calculate and Output
-    cols = ['alias', 'barcode', 'total_mb', 'genome_mb', 'coverage']
+    cols = ['alias', 'barcode', 'low_mat', 'total_mb', 'genome_mb', 'coverage']
     if summary_path:
         cols += ['avg_len', 'short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len']
 
@@ -119,6 +123,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
         header_map = {
             'alias': f"{'alias':<15}",
             'barcode': f"{'barcode':<12}",
+            'low_mat': f"{'low_mat':<8}",
             'total_mb': f"{'yield (Mb)':>10}",
             'genome_mb': f"{'genome (Mb)':>12}",
             'coverage': f"{'cov':>6}",
@@ -129,9 +134,13 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             'long_avg_len': f"{f'>={thresh_kb} avg':>10}"
         }
         print(" ".join([header_map[c] for c in cols]))
-        print("-" * (120 if summary_path else 60))
+        print("-" * (128 if summary_path else 68))
     
     for barcode, info in sorted(samples.items()):
+        # Low material filter
+        if no_low_material and info['low_material']:
+            continue
+            
         y = yields.get(barcode, {'bases': 0, 'reads': 0, 'short_bases': 0, 'short_reads': 0, 'long_bases': 0, 'long_reads': 0})
         
         total_mb = y['bases'] / 1_000_000
@@ -144,6 +153,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
         row_data = {
             'alias': info['alias'][:12] + "..." if len(info['alias']) > 14 else info['alias'],
             'barcode': barcode,
+            'low_mat': "Y" if info['low_material'] else " ",
             'total_mb': f"{total_mb:.2f}",
             'genome_mb': f"{genome_mb:.2f}",
             'coverage': f"{coverage:.1f}",
@@ -160,6 +170,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             fmt_map = {
                 'alias': f"{row_data['alias']:<15}",
                 'barcode': f"{row_data['barcode']:<12}",
+                'low_mat': f"{row_data['low_mat']:<8}",
                 'total_mb': f"{row_data['total_mb']:>10}",
                 'genome_mb': f"{row_data['genome_mb']:>12}",
                 'coverage': f"{row_data['coverage']:>6}",

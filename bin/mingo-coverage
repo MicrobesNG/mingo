@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--summary", help="Path to the sequencing summary TXT file.")
     parser.add_argument("--below", type=int, help="Only output lines where coverage is below this value.")
     parser.add_argument("--bin-threshold", type=int, default=7000, help="Read length threshold for binned stats (default: 7000).")
+    parser.add_argument("--no-low-material", action="store_true", help="Exclude samples marked as low material in the sample sheet.")
     parser.add_argument("--csv", action="store_true", help="Output in CSV format.")
     
     args = parser.parse_args()
@@ -29,7 +30,8 @@ def main():
         summary_path=args.summary, 
         filter_below_coverage=args.below, 
         output_csv=args.csv, 
-        bin_threshold=args.bin_threshold
+        bin_threshold=args.bin_threshold,
+        no_low_material=args.no_low_material
     )
 
 if __name__ == "__main__":
