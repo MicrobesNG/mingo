@@ -135,5 +135,6 @@ export S3_POD5_BUCKET=ont-raw-archive/projects
 export S3_ENDPOINT_URL=http://localhost:9000
 # use podman wrapped minio to test as a fake s3
 scripts/start_minio_dev.sh
+cd example_runs/NSR_UploadTest
 mingo-upload
 ```
