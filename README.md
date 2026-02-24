@@ -55,17 +55,62 @@ python -m minknow_api.examples.manage_simulated_devices --host <host|localhost> 
 
 Calculate genome coverage and read distribution stats from sequencing data.
 
+### Parameters
+
+* `--auto`: Automatically find sample sheet and JSON report in an ONT run directory.
+* `--json`: Specify a JSON report (basic yield only).
+* `--summary`: Specify a sequencing summary (recommended for detailed stats).
+* `--bin-threshold`: Custom read length threshold (default 7000bp) for sequencing summaries.
+* `--hide-low-material`: Hide low material samples
+* `--below` <coverage>: show samples which miss coverage target of <coverage>x.
+* `--csv`: output in csv format (default is human readable format)
+
+### Examples
+
 ```bash
-# Automatically find sample sheet and JSON report in an ONT run directory
+
+# enter run folder
 cd NSR_xxxx_timestamp_run_id
-python3 ../bin/mingo-coverage --auto
+
+# Automatically find sample sheet and JSON report in an ONT run directory
+mingo-coverage --auto
+
+# Specifying a JSON report (basic yield only)
+mingo-coverage samples.csv --json report.json
+
+# Hide low material samples and show samples which miss coverage target of 55x
+mingo-coverage --auto --hide-low-material --below 55
 
 # Using a sequencing summary (recommended for detailed stats)
-python3 bin/mingo-coverage samples.csv --summary summary.txt
+mingo-coverage samples.csv --summary summary.txt
 
-# Using a JSON report (basic yield only)
-python3 bin/mingo-coverage samples.csv --json report.json
+# Using a custom read length threshold (default 7000bp) for sequencing summaries
+mingo-coverage samples.csv --summary summary.txt --bin-threshold 5000
 
-# Using a custom read length threshold (default 7000bp)
-python3 bin/mingo-coverage samples.csv --summary summary.txt --bin-threshold 5000
+```
+## Upload Tool
+
+Calculate and manage S3 uploads of sequenced FASTQ and active POD5 files using `bin/mingo-upload`. It streams files to reduce disk I/O, utilizes a smart directory structure based on the sample sheet, generates JSON manifests with public URLs, and supports upload resumption.
+
+### Parameters
+* `--fastq-only` / `--pod5-only`: Process only specific file types.
+* `--s3-fastq-bucket` / `--s3-pod5-bucket`: Destination S3 Bucket for the upload. **Note: These accept an optional prefix path** (e.g. `my-bucket/path/to/my/folder`). They default to ENV vars or standard routes based on NSR/PSR run types.
+* `--s3-root-folder`: Optional root folder placed inside the POD5 bucket structure.
+* `--s3-endpoint-url`: Custom S3 endpoint URL for local testing (e.g., MinIO).
+* `--slack-webhook`: Slack Webhook URL for status notifications.
+
+### Examples
+
+```bash
+# General use in an ONT run directory
+cd NSR_xxxx_timestamp_run_id
+mingo-upload
+
+# Only upload FASTQs to a custom bucket and prefix
+mingo-upload --fastq-only --s3-fastq-bucket "my-custom-bucket/my-custom-prefix"
+
+# Test locally against MinIO
+export AWS_ACCESS_KEY_ID=minioadmin
+export AWS_SECRET_ACCESS_KEY=minioadmin
+mingo-upload --s3-endpoint-url http://localhost:9000 --s3-fastq-bucket dummy-bucket --s3-pod5-bucket dummy-bucket
 ```

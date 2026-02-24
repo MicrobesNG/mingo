@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+import sys
+import os
+import argparse
+import glob
+import logging
+
+# Add the project root to sys.path to allow imports from mingo
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from mingo.uploader import MingoUploader
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('mingo-upload')
+
+def main():
+    parser = argparse.ArgumentParser(description="Upload ONT run data (FASTQ/POD5) to S3.")
+    parser.add_argument("--fastq-only", action="store_true", help="Only upload FASTQ files.")
+    parser.add_argument("--pod5-only", action="store_true", help="Only upload POD5 files.")
+    parser.add_argument("--s3-fastq-bucket", default=os.environ.get("S3_FASTQ_BUCKET"), help="S3 Bucket (and optional prefix path) for FASTQs (defaults to env S3_FASTQ_BUCKET)")
+    parser.add_argument("--s3-pod5-bucket", default=os.environ.get("S3_POD5_BUCKET"), help="S3 Bucket (and optional prefix path) for POD5s (defaults to env S3_POD5_BUCKET)")
+    parser.add_argument("--s3-root-folder", default=os.environ.get("S3_ROOT_FOLDER"), help="Optional root folder inside POD5 bucket.")
+    parser.add_argument("--s3-endpoint-url", default=os.environ.get("S3_ENDPOINT_URL"), help="S3 Custom Endpoint URL for local testing (e.g. MinIO).")
+    parser.add_argument("--slack-webhook", required=os.environ.get("SLACK_WEBHOOK_URL") is None, default=os.environ.get("SLACK_WEBHOOK_URL"), help="Slack Webhook URL (required if SLACK_WEBHOOK_URL env is not set).")
+
+    args = parser.parse_args()
+
+    # Determine what to upload based on flags
+    upload_fastq = not args.pod5_only
+    upload_pod5 = not args.fastq_only
+
+    cwd_name = os.path.basename(os.getcwd())
+    if not (cwd_name.startswith('NSR') or cwd_name.startswith('PSR')):
+        logger.error("Current directory does not appear to be an ONT run directory (must start with 'NSR' or 'PSR').")
+        sys.exit(1)
+
+    # Automatically set default buckets based on run type if missing
+    run_type_letter = cwd_name[0].upper()
+    if upload_fastq and not args.s3_fastq_bucket:
+        if run_type_letter == 'P':
+            args.s3_fastq_bucket = "microbesng-plasmidseq/runs"
+        elif run_type_letter == 'N':
+            args.s3_fastq_bucket = "microbesng-data/gridion_run"
+            
+    if upload_pod5 and not args.s3_pod5_bucket:
+        # User didn't specify defaults for POD5 in Upload_Script.sh, but let's assume same as fastq if empty or prompt
+        args.s3_pod5_bucket = args.s3_fastq_bucket.split('/')[0] if args.s3_fastq_bucket else None
+        
+    if upload_fastq and not args.s3_fastq_bucket:
+        logger.error("Must provide --s3-fastq-bucket or set default env var.")
+        sys.exit(1)
+        
+    if upload_pod5 and not args.s3_pod5_bucket:
+        logger.error("Must provide --s3-pod5-bucket or set default env var.")
+        sys.exit(1)
+
+    sample_sheets = glob.glob('no_sample_id/*/sample_sheet*.csv')
+    if not sample_sheets:
+        logger.error("No sample sheet found via 'no_sample_id/*/sample_sheet*.csv'")
+        sys.exit(1)
+    elif len(sample_sheets) > 1:
+        logger.error("Multiple sample sheets found. Cannot determine which to use.")
+        sys.exit(1)
+        
+    csv_path = sample_sheets[0]
+    sub_run = os.path.basename(os.path.dirname(csv_path))
+
+    uploader = MingoUploader(
+        s3_bucket_fastq=args.s3_fastq_bucket, 
+        s3_bucket_pod5=args.s3_pod5_bucket,
+        s3_root_folder=args.s3_root_folder,
+        slack_webhook_url=args.slack_webhook,
+        s3_endpoint_url=args.s3_endpoint_url
+    )
+
+    try:
+        samples = uploader.parse_sample_sheet(csv_path)
+    except Exception as e:
+        logger.error(f"Failed to parse sample sheet: {e}")
+        sys.exit(1)
+
+    top_run_dir = os.getcwd()
+    run_name = cwd_name
+
+    fastq_manifest_data = []
+    pod5_manifest_data = []
+
+    error_occurred = False
+
+    for barcode, info in samples.items():
+        alias = info['alias']
+        order_name = info['order_name']
+
+        if upload_fastq:
+            try:
+                uri = uploader.upload_fastq_for_barcode(top_run_dir, sub_run, barcode, alias, args.s3_fastq_bucket)
+                if uri:
+                    fastq_manifest_data.append({
+                        "barcode": barcode,
+                        "alias": alias,
+                        "s3_uri": uri
+                    })
+            except Exception as e:
+                logger.error(f"Error processing FASTQs for {barcode}: {e}")
+                error_occurred = True
+
+        if upload_pod5:
+            try:
+                uris = uploader.upload_pod5_for_barcode(top_run_dir, sub_run, barcode, alias, order_name, args.s3_pod5_bucket)
+                for uri in uris:
+                    pod5_manifest_data.append({
+                        "barcode": barcode,
+                        "alias": alias,
+                        "order": order_name,
+                        "s3_uri": uri
+                    })
+            except Exception as e:
+                logger.error(f"Error processing POD5s for {barcode}: {e}")
+                error_occurred = True
+
+    if upload_fastq and fastq_manifest_data:
+        uploader.write_manifest(top_run_dir, run_name, "fastq", fastq_manifest_data)
+        
+        # Upload the sample sheet itself to FASTQ bucket route (mirroring old behavior)
+        logger.info(f"Uploading sample sheet {csv_path} to s3://{args.s3_fastq_bucket}/{run_name}/")
+        try:
+            bucket_name, dest_key = uploader._split_bucket_prefix(args.s3_fastq_bucket, f"{run_name}/{os.path.basename(csv_path)}")
+            uploader.s3_client.upload_file(csv_path, bucket_name, dest_key)
+        except Exception as e:
+             logger.error(f"Failed to upload sample sheet: {e}")
+             error_occurred = True
+
+    if upload_pod5 and pod5_manifest_data:
+        uploader.write_manifest(top_run_dir, run_name, "pod5", pod5_manifest_data)
+
+    if error_occurred:
+        message = f"ONT upload for run {run_name} completed with errors. See logs."
+        logger.error(message)
+        uploader.send_slack_notification(message)
+        sys.exit(1)
+    else:
+        message = f"ONT upload for run {run_name} completed successfully."
+        logger.info(message)
+        uploader.send_slack_notification(message)
+
+if __name__ == "__main__":
+    main()
