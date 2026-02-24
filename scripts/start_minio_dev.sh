@@ -27,7 +27,7 @@ ENDPOINT="http://localhost:9000"
 podman exec $CONTAINER_NAME mc alias set myminio http://localhost:9000 minioadmin minioadmin
 podman exec $CONTAINER_NAME mc mb myminio/microbesng-plasmidseq --ignore-existing
 podman exec $CONTAINER_NAME mc mb myminio/microbesng-data --ignore-existing
-podman exec $CONTAINER_NAME mc mb myminio/dummy-bucket --ignore-existing
+podman exec $CONTAINER_NAME mc mb myminio/ont-raw-archive --ignore-existing
 
 echo "MinIO is running at $ENDPOINT (Console: http://localhost:9001)"
 echo "Test buckets created."

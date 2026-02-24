@@ -92,6 +92,16 @@ mingo-coverage samples.csv --summary summary.txt --bin-threshold 5000
 
 Calculate and manage S3 uploads of sequenced FASTQ and active POD5 files using `bin/mingo-upload`. It streams files to reduce disk I/O, utilizes a smart directory structure based on the sample sheet, generates JSON manifests with public URLs, and supports upload resumption.
 
+These must be in your `.bashrc`or equivalent.
+
+```bash
+export AWS_ACCESS_KEY_ID=XXXX
+export AWS_SECRET_ACCESS_KEY=XXXX
+export SLACK_WEBHOOK_URL=XXXXXX
+export S3_FASTQ_BUCKET=microbesng-data/gridion_run
+export S3_POD5_BUCKET=ont-raw-archive/projects
+```
+
 ### Parameters
 * `--fastq-only` / `--pod5-only`: Process only specific file types.
 * `--s3-fastq-bucket` / `--s3-pod5-bucket`: Destination S3 Bucket for the upload. **Note: These accept an optional prefix path** (e.g. `my-bucket/path/to/my/folder`). They default to ENV vars or standard routes based on NSR/PSR run types.
@@ -103,14 +113,27 @@ Calculate and manage S3 uploads of sequenced FASTQ and active POD5 files using `
 
 ```bash
 # General use in an ONT run directory
-cd NSR_xxxx_timestamp_run_id
+cd /data/NSR_xxxxxxxx_RUN_XX
 mingo-upload
 
 # Only upload FASTQs to a custom bucket and prefix
-mingo-upload --fastq-only --s3-fastq-bucket "my-custom-bucket/my-custom-prefix"
+mingo-upload --fastq-only
 
+# Only upload POD5s to a custom bucket and prefix
+mingo-upload --pod5-only
+```
+
+### Testing
+
+```
 # Test locally against MinIO
 export AWS_ACCESS_KEY_ID=minioadmin
 export AWS_SECRET_ACCESS_KEY=minioadmin
-mingo-upload --s3-endpoint-url http://localhost:9000 --s3-fastq-bucket dummy-bucket --s3-pod5-bucket dummy-bucket
+export SLACK_WEBHOOK_URL=XXXXXX
+export S3_FASTQ_BUCKET=microbesng-data/gridion_run
+export S3_POD5_BUCKET=ont-raw-archive/projects
+export S3_ENDPOINT_URL=http://localhost:9000
+# use podman wrapped minio to test as a fake s3
+scripts/start_minio_dev.sh
+mingo-upload
 ```
