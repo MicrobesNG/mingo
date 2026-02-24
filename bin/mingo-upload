@@ -83,7 +83,7 @@ def main():
     run_name = cwd_name
 
     fastq_manifest_data = []
-    pod5_manifest_data = []
+    pod5_manifest_data = {}
 
     error_occurred = False
 
@@ -107,11 +107,12 @@ def main():
         if upload_pod5:
             try:
                 uris = uploader.upload_pod5_for_barcode(top_run_dir, sub_run, barcode, alias, order_name, args.s3_pod5_bucket)
+                if order_name not in pod5_manifest_data:
+                    pod5_manifest_data[order_name] = []
                 for uri in uris:
-                    pod5_manifest_data.append({
+                    pod5_manifest_data[order_name].append({
                         "barcode": barcode,
                         "alias": alias,
-                        "order": order_name,
                         "s3_uri": uri
                     })
             except Exception as e:
@@ -131,7 +132,8 @@ def main():
              error_occurred = True
 
     if upload_pod5 and pod5_manifest_data:
-        uploader.write_manifest(top_run_dir, run_name, "pod5", pod5_manifest_data)
+        for order_name, manifest_data in pod5_manifest_data.items():
+            uploader.write_manifest(top_run_dir, run_name, "pod5", manifest_data, order_name=order_name, s3_bucket=args.s3_pod5_bucket)
 
     if error_occurred:
         message = f"ONT upload for run {run_name} completed with errors. See logs."

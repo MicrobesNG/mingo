@@ -6,7 +6,6 @@ import subprocess
 import boto3
 from botocore.exceptions import ClientError
 from slack_sdk.webhook import WebhookClient
-from mingo.coverage import run_coverage_analysis  # Re-using logic if needed, or dict parsing
 import csv
 
 logger = logging.getLogger(__name__)
@@ -199,19 +198,32 @@ class MingoUploader:
                 
         return uploaded_uris
 
-    def write_manifest(self, top_run_dir, run_name, manifest_type, manifest_data):
-        """Writes a JSON manifest of uploaded files."""
+    def write_manifest(self, top_run_dir, run_name, manifest_type, manifest_data, order_name=None, s3_bucket=None):
+        """Writes a JSON manifest of uploaded files and optionally uploads it to S3."""
         # Check if manifest data is valid before writing
         if not manifest_data:
             return None
             
-        manifest_filename = f"manifest_{manifest_type}_{run_name}.json"
+        if manifest_type == "pod5" and order_name:
+            manifest_filename = f"manifest_{manifest_type}_{order_name}.json"
+        else:
+            manifest_filename = f"manifest_{manifest_type}_{run_name}.json"
+            
         manifest_path = os.path.join(top_run_dir, manifest_filename)
         
         try:
             with open(manifest_path, 'w') as f:
                 json.dump(manifest_data, f, indent=4)
             logger.info(f"Wrote {manifest_type} manifest to {manifest_path}")
+
+            if manifest_type == "pod5" and order_name and s3_bucket:
+                prefix = f"{self.s3_root_folder}/" if self.s3_root_folder else ""
+                dest_key = f"{prefix}{order_name}/{manifest_filename}"
+                bucket_name, dest_key = self._split_bucket_prefix(s3_bucket, dest_key)
+                
+                logger.info(f"Uploading POD5 manifest to s3://{bucket_name}/{dest_key}...")
+                self.s3_client.upload_file(manifest_path, bucket_name, dest_key)
+
             return manifest_path
         except Exception as e:
             logger.error(f"Failed to write manifest {manifest_path}: {e}")
