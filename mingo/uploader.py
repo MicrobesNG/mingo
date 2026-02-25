@@ -103,10 +103,10 @@ class MingoUploader:
 
     def upload_fastq_for_barcode(self, top_run_dir, sub_run, barcode, alias, bucket):
         run_name = os.path.basename(top_run_dir)
-        fastq_dir = os.path.join(top_run_dir, "no_sample_id", sub_run, "fastq_pass", barcode)
+        fastq_dir = os.path.join(top_run_dir, "no_sample_id", sub_run, "fastq_pass", alias)
         
         if not os.path.exists(fastq_dir):
-            logger.warning(f"No fastq_pass directory found for barcode {barcode} at {fastq_dir}")
+            logger.warning(f"No fastq_pass directory found for alias {alias} at {fastq_dir}")
             return None
 
         fastqs = glob.glob(os.path.join(fastq_dir, "*.fastq.gz"))
@@ -115,15 +115,16 @@ class MingoUploader:
             return None
 
         destination_key = f"{run_name}/{alias}_{sub_run}_{barcode}.fastq.gz"
-        bucket_name, destination_key = self._split_bucket_prefix(bucket, destination_key)
         
         # Calculate expected size to ensure robustness against mid-upload terminations
         expected_size = sum(os.path.getsize(f) for f in fastqs)
         
         if self.file_exists_on_s3(bucket, destination_key, expected_size=expected_size):
-            logger.info(f"Skipping {destination_key} - already exists on S3 with matching size (~{expected_size/1024/1024:.2f} MB).")
-            return self._build_public_url(bucket_name, destination_key)
+            bucket_name, dest_key = self._split_bucket_prefix(bucket, destination_key)
+            logger.info(f"Skipping {dest_key} - already exists on S3 with matching size (~{expected_size/1024/1024:.2f} MB).")
+            return self._build_public_url(bucket_name, dest_key)
 
+        bucket_name, destination_key = self._split_bucket_prefix(bucket, destination_key)
         logger.info(f"Uploading {len(fastqs)} FASTQ files for {barcode} to s3://{bucket_name}/{destination_key}...")
         
         # Stream concatenation using subproccess directly into boto3 upload_fileobj
@@ -162,10 +163,10 @@ class MingoUploader:
 
     def upload_pod5_for_barcode(self, top_run_dir, sub_run, barcode, alias, order_name, bucket):
         run_name = os.path.basename(top_run_dir)
-        pod5_dir = os.path.join(top_run_dir, "no_sample_id", sub_run, "pod5_pass", barcode)
+        pod5_dir = os.path.join(top_run_dir, "no_sample_id", sub_run, "pod5_pass", alias)
         
         if not os.path.exists(pod5_dir):
-            logger.warning(f"No pod5_pass directory found for barcode {barcode} at {pod5_dir}")
+            logger.warning(f"No pod5_pass directory found for alias {alias} at {pod5_dir}")
             return []
 
         pod5s = glob.glob(os.path.join(pod5_dir, "*.pod5"))
@@ -180,14 +181,14 @@ class MingoUploader:
             prefix = f"{self.s3_root_folder}/" if self.s3_root_folder else ""
             destination_key = f"{prefix}{order_name}/{alias}/{filename}"
             
-            bucket_name, destination_key = self._split_bucket_prefix(bucket, destination_key)
-            
             expected_size = os.path.getsize(pod5_path)
-            if self.file_exists_on_s3(bucket, f"{prefix}{order_name}/{alias}/{filename}", expected_size=expected_size):
-                logger.debug(f"Skipping {destination_key} - already exists on S3 with matching size.")
-                uploaded_uris.append(self._build_public_url(bucket_name, destination_key))
+            if self.file_exists_on_s3(bucket, destination_key, expected_size=expected_size):
+                bucket_name, dest_key = self._split_bucket_prefix(bucket, destination_key)
+                logger.debug(f"Skipping {dest_key} - already exists on S3 with matching size.")
+                uploaded_uris.append(self._build_public_url(bucket_name, dest_key))
                 continue
 
+            bucket_name, destination_key = self._split_bucket_prefix(bucket, destination_key)
             logger.info(f"Uploading {filename} to s3://{bucket_name}/{destination_key}...")
             try:
                 self.s3_client.upload_file(pod5_path, bucket_name, destination_key)

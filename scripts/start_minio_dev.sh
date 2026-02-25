@@ -25,9 +25,14 @@ ENDPOINT="http://localhost:9000"
 # Using AWS CLI to create buckets, assuming awscli is installed or we use podman directly
 # We can use podman exec with the minio client (mc) to create buckets inside the container securely
 podman exec $CONTAINER_NAME mc alias set myminio http://localhost:9000 minioadmin minioadmin
-podman exec $CONTAINER_NAME mc mb myminio/microbesng-plasmidseq --ignore-existing
-podman exec $CONTAINER_NAME mc mb myminio/microbesng-data --ignore-existing
-podman exec $CONTAINER_NAME mc mb myminio/ont-raw-archive --ignore-existing
+set +e
+podman exec $CONTAINER_NAME mc rb --force myminio/test-plasmidseq
+podman exec $CONTAINER_NAME mc rb --force myminio/test-data
+podman exec $CONTAINER_NAME mc rb --force myminio/test-raw-archive
+set -e
+podman exec $CONTAINER_NAME mc mb myminio/test-plasmidseq --ignore-existing
+podman exec $CONTAINER_NAME mc mb myminio/test-data --ignore-existing
+podman exec $CONTAINER_NAME mc mb myminio/test-raw-archive --ignore-existing
 
 echo "MinIO is running at $ENDPOINT (Console: http://localhost:9001)"
 echo "Test buckets created."
