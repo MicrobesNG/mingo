@@ -7,7 +7,7 @@ Run manager and status tools for Oxford Nanopore P2 Solo sequencers.
  - `mingo/run_manager.py` - interactive CLI to start runs from SLIMS
  - `mingo/gridion_status.py` - show the current run status of all of the active flowcell positions in a local gridion (requires local guest mode enabled)
  - `mingo/flowcell_health.py` - show latest pore count for a flowcell and on which hosts it has been checked
- - `mingo/watch_gridion.py` - dynamic monitoring of sequencer status
+ - `bin/mingo-watch` - dynaminc monitoring daemon for sequencer protocol statuses
  - `bin/mingo-coverage` - calculate genome coverage and read distribution from JSON reports or sequencing summaries
 
 ## Get Hacking
@@ -137,4 +137,35 @@ export S3_ENDPOINT_URL=http://localhost:9000
 scripts/start_minio_dev.sh
 cd example_runs/NSR_UploadTest
 mingo-upload
+```
+
+## Run Watcher
+
+A daemon (`bin/mingo-watch`) that uses MinKNOW's gRPC stream to hook into all flow cells and report ongoing status transitions. It deduplicates MinKNOW states to avoid notification spam and distinguishes between internal hardware routines and user protocols (i.e. runs).
+
+### Parameters
+* `--host` / `--port`: Address of the sequencer running MinKNOW (default: `localhost` - port can be omitted).
+* `--level`: Verbosity of the monitoring stream.
+  * `normal` (default): Only emits messages and Slack notifications when standard User Protocols start, error out, or finish smoothly. Discards calibration runs.
+  * `info`: Additionally broadcasts MinKNOW internal tests including flow cell pings and hardware checks.
+  * `debug`: All underlying events
+* `--notify-slack`: Enable Slack webhooks for any of the above thresholds.
+* `--slack-webhook`: Slack Webhook URL for status notifications (defaults to `SLACK_WEBHOOK_URL` ENV).
+
+### Example Service Configuration
+
+You can daemonize the script using systemd to start on boot and restart on failure. An example `.service` file is available at `examples/mingo-watch.service`.
+
+1. Copy `examples/mingo-watch.service` to `/etc/systemd/system/mingo-watch.service`.
+2. Edit the file to fit your deployment directory and Python interpreter:
+```ini
+WorkingDirectory=/opt/mng/mingo
+Environment="SLACK_WEBHOOK_URL=https://hooks.slack.com/services/..."
+Environment="MINKNOW_TRUSTED_CA=/data/rpc-certs/minknow/ca.crt"
+ExecStart=/opt/mng/mingo/.venv/bin/python3 /opt/mng/mingo/bin/mingo-watch --host localhost --level normal --notify-slack
+```
+3. Enable and start:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now mingo-watch
 ```
