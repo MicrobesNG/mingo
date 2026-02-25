@@ -123,9 +123,9 @@ def main():
         uploader.write_manifest(top_run_dir, run_name, "fastq", fastq_manifest_data)
         
         # Upload the sample sheet itself to FASTQ bucket route (mirroring old behavior)
-        logger.info(f"Uploading sample sheet {csv_path} to s3://{args.s3_fastq_bucket}/{run_name}/")
+        logger.info(f"Uploading sample sheet {csv_path} to s3://{args.s3_fastq_bucket}/{run_name}/{run_name}.csv")
         try:
-            bucket_name, dest_key = uploader._split_bucket_prefix(args.s3_fastq_bucket, f"{run_name}/{os.path.basename(csv_path)}")
+            bucket_name, dest_key = uploader._split_bucket_prefix(args.s3_fastq_bucket, f"{run_name}/{run_name}.csv")
             uploader.s3_client.upload_file(csv_path, bucket_name, dest_key)
         except Exception as e:
              logger.error(f"Failed to upload sample sheet: {e}")
