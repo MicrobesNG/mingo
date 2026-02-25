@@ -1,0 +1,5 @@
+flow_cell_id,position_id,sample_id,experiment_id,flow_cell_product_code,kit,alias,type,barcode,cntn_cf_fk_barcode_i7,cntn_id,cntn_cf_taxon,cntn_cf_genomeSizeMb,cntn_cf_gcContent,cntn_cf_orderName,cntn_cf_stockConcentration,cntn_cf_stockConcentration_unit,cntn_cf_isUrgent,cntn_cf_lowMaterial
+FC123,S1,,RunABCD,FLO-MIN106,SQK-LSK114,SampleA,test_sample,barcode01,barcode01,SampleA,E. coli,5,50,ProjectAB,10,ng/ul,false,false
+FC123,S1,,RunABCD,FLO-MIN106,SQK-LSK114,SampleB,test_sample,barcode02,barcode02,SampleB,E. coli,5,50,ProjectAB,10,ng/ul,false,false
+FC123,S1,,RunABCD,FLO-MIN106,SQK-LSK114,SampleC,test_sample,barcode03,barcode03,SampleC,E. coli,5,50,ProjectCD,10,ng/ul,false,false
+FC123,S1,,RunABCD,FLO-MIN106,SQK-LSK114,SampleD,test_sample,barcode04,barcode04,SampleD,E. coli,5,50,ProjectCD,10,ng/ul,false,false
