@@ -1,0 +1,29 @@
+[Unit]
+Description=MinKNOW Watcher Daemon
+After=network.target
+After=minknow.service
+Requires=minknow.service
+
+[Service]
+Type=simple
+User=minknow
+Group=minknow
+# Adjust the path to where the mingo directory is located
+WorkingDirectory=/opt/mng/mingo
+# If using direnv/virtualenv, you may need to point ExecStart to the specific python binary
+ExecStart=/opt/mng/mingo/.venv/bin/python3 /opt/mng/mingo/bin/mingo-watch --host localhost --level normal
+
+# Optional: Add slack webhook here if --notify-slack is used
+# Environment="SLACK_WEBHOOK_URL=https://hooks.slack.com/services/..."
+# Environment="MINKNOW_TRUSTED_CA=/data/rpc-certs/minknow/ca.crt"
+# ExecStart=/opt/mng/mingo/.venv/bin/python3 /opt/mng/mingo/bin/mingo-watch --host localhost --level normal --notify-slack
+
+Restart=on-failure
+RestartSec=10
+
+# Security (Optional but recommended)
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

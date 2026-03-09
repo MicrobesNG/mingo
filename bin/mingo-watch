@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+
+import sys
+import os
+import argparse
+import logging
+import time
+
+# Add the project root to sys.path to allow imports from mingo
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from mingo.watch import MinKNOWWatcher
+
+def main():
+    parser = argparse.ArgumentParser(description="Daemon to watch MinKNOW protocol states.")
+    parser.add_argument("--host", default="localhost", help="IP address of MinKNOW host (default: localhost)")
+    parser.add_argument("--port", type=int, help="Port for MinKNOW (default: standard MinKNOW port)")
+    parser.add_argument("--level", choices=["normal", "info", "debug"], default="normal",
+                        help="Reporting level: normal (user runs only), info (all protocols), debug (all events). Default: normal")
+    parser.add_argument("--notify-slack", action="store_true", help="Send Slack notifications for reported events")
+    parser.add_argument("--slack-webhook", default=os.environ.get("SLACK_WEBHOOK_URL"), help="Slack Webhook URL (used if --notify-slack is set, defaults to SLACK_WEBHOOK_URL env).")
+    
+    args = parser.parse_args()
+
+    # Configure logging based on level
+    log_level = logging.DEBUG if args.level == "debug" else logging.INFO
+    logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    slack_webhook_url = None
+    if args.notify_slack:
+        slack_webhook_url = args.slack_webhook
+        if not slack_webhook_url:
+            logging.error("--notify-slack specified but no Slack webhook URL provided via --slack-webhook or SLACK_WEBHOOK_URL env.")
+            sys.exit(1)
+
+    watcher = MinKNOWWatcher(host=args.host, port=args.port, level=args.level, slack_webhook_url=slack_webhook_url)
+    
+    logging.info(f"Starting MinKNOW watcher on {args.host} (Level: {args.level})")
+    try:
+        watcher.start()
+        # Keep main thread alive
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logging.info("Caught KeyboardInterrupt, shutting down...")
+        watcher.stop()
+    except Exception as e:
+        logging.error(f"Watcher failed: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

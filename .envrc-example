@@ -1,6 +1,15 @@
 layout python python3.12
 
-#export MINKNOW_TRUSTED_CA=`pwd`/certs/ca.crt
+# copy this from /data/rpc-certs/minknow/ca.crt from the machine you want to connect to
+export MINKNOW_TRUSTED_CA=`pwd`/certs/<host>.crt
 
-#export SLACK_HOOK="https://hooks.slack.com/services/XXXXXX/XXXXX/XXXXXXXX"
+export SLACK_HOOK="https://hooks.slack.com/services/XXXXXX/XXXXX/XXXXXXXX"
+
+export AWS_ACCESS_KEY_ID=XXXXXXXXX
+export AWS_SECRET_ACCESS_KEY=XXXXXXXXX
+export AWS_ENDPOINT_URL=http://localhost:9000
+export AWS_DEFAULT_REGION=us-east-1
+export SLACK_WEBHOOK_URL=XXXXXXXXXXX
+export S3_FASTQ_BUCKET=microbesng-data/gridion_run
+export S3_POD5_BUCKET=ont-raw-archive/projects
 
