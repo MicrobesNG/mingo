@@ -23,10 +23,6 @@ class BatchFileHandler(FileSystemEventHandler):
                 filename = os.path.basename(event.src_path)
                 self.log_callback(self.pos_name, filename)
 
-from minknow_api import protocol_pb2
-
-logger = logging.getLogger(__name__)
-
 ERROR_STATES = {
     protocol_pb2.PROTOCOL_FINISHED_WITH_ERROR: "Error",
     protocol_pb2.PROTOCOL_FINISHED_WITH_DEVICE_ERROR: "Device Error",
