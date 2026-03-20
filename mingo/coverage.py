@@ -33,6 +33,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
     # Structure: { barcode: {'bases': 0, 'reads': 0, 'short_bases': 0, 'short_reads': 0, 'long_bases': 0, 'long_reads': 0} }
 
     # 2. Parse Reports
+    max_start_time = 0.0
     if summary_path:
         try:
             with open(summary_path, 'r') as f:
@@ -41,6 +42,13 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                     barcode = row.get('barcode_arrangement')
                     if not barcode: continue
                     
+                    try:
+                        start_time = float(row.get('start_time', 0))
+                        if start_time > max_start_time:
+                            max_start_time = start_time
+                    except ValueError:
+                        pass
+
                     if row.get('passes_filtering') != 'TRUE':
                         continue
                     
@@ -109,7 +117,12 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
         sys.exit(1)
 
     # 3. Calculate and Output
+    show_eta = bool(summary_path and filter_below_coverage is not None)
+    
     cols = ['alias', 'barcode', 'low_mat', 'total_mb', 'genome_mb', 'coverage']
+    if show_eta:
+        cols.append('eta')
+        
     if summary_path:
         cols += ['avg_len', 'short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len']
 
@@ -127,6 +140,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             'total_mb': f"{'yield (Mb)':>10}",
             'genome_mb': f"{'genome (Mb)':>12}",
             'coverage': f"{'cov':>6}",
+            'eta': f"{'eta':>8}",
             'avg_len': f"{'avg_len':>8}",
             'short_total_mb': f"{f'<{thresh_kb} yield':>12}",
             'short_avg_len': f"{f'<{thresh_kb} avg':>10}",
@@ -150,6 +164,19 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
         if filter_below_coverage is not None and coverage >= filter_below_coverage:
             continue
             
+        eta_str = ""
+        if show_eta:
+            target_mb = filter_below_coverage * genome_mb
+            remaining_mb = target_mb - total_mb
+            if max_start_time > 0 and total_mb > 0:
+                rate_mb_per_sec = total_mb / max_start_time
+                eta_secs = remaining_mb / rate_mb_per_sec
+                eta_hrs, eta_rem = divmod(eta_secs, 3600)
+                eta_mins = eta_rem // 60
+                eta_str = f"{int(eta_hrs)}h {int(eta_mins)}m"
+            else:
+                eta_str = "N/A"
+                
         row_data = {
             'alias': info['alias'][:12] + "..." if len(info['alias']) > 14 else info['alias'],
             'barcode': barcode,
@@ -157,6 +184,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             'total_mb': f"{total_mb:.2f}",
             'genome_mb': f"{genome_mb:.2f}",
             'coverage': f"{coverage:.1f}",
+            'eta': eta_str,
             'avg_len': f"{int(y['bases']/y['reads'])}" if y['reads'] > 0 else "0",
             'short_total_mb': f"{y['short_bases']/1_000_000:.2f}",
             'short_avg_len': f"{int(y['short_bases']/y['short_reads'])}" if y['short_reads'] > 0 else "0",
@@ -174,6 +202,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 'total_mb': f"{row_data['total_mb']:>10}",
                 'genome_mb': f"{row_data['genome_mb']:>12}",
                 'coverage': f"{row_data['coverage']:>6}",
+                'eta': f"{row_data['eta']:>8}",
                 'avg_len': f"{row_data['avg_len']:>8}",
                 'short_total_mb': f"{row_data['short_total_mb']:>12}",
                 'short_avg_len': f"{row_data['short_avg_len']:>10}",
