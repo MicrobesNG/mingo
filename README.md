@@ -57,12 +57,13 @@ Calculate genome coverage and read distribution stats from sequencing data.
 
 ### Parameters
 
-* `--auto`: Automatically find sample sheet and JSON report in an ONT run directory.
-* `--json`: Specify a JSON report (basic yield only).
+* `--auto`: Automatically find sample sheet and sequencing summary (or JSON report fallback) in an ONT run directory. This supports live-tracking temporary summaries (`.txt.tmp`) directly from MinKNOW during active runs.
+* `--quick`: When using `--auto`, force the use of the (simplified) JSON run report instead of the sequencing summary.
+* `--json`: Specify a JSON run report (basic yield only).
 * `--summary`: Specify a sequencing summary (recommended for detailed stats).
 * `--bin-threshold`: Custom read length threshold (default 7000bp) for sequencing summaries.
-* `--hide-low-material`: Hide low material samples
-* `--below` <coverage>: show samples which miss coverage target of <coverage>x.
+* `--no-low-material`: Exclude samples marked as low material in the sample sheet.
+* `--below` <coverage>: show samples which miss coverage target of <coverage>x. (Displays real-time ETA when evaluating live sequencing summaries).
 * `--csv`: output in csv format (default is human readable format)
 
 ### Examples
@@ -72,14 +73,14 @@ Calculate genome coverage and read distribution stats from sequencing data.
 # enter run folder
 cd NSR_xxxx_timestamp_run_id
 
-# Automatically find sample sheet and JSON report in an ONT run directory
+# Automatically find sample sheet and sequence summary (or JSON) in an ONT run directory
 mingo-coverage --auto
 
-# Specifying a JSON report (basic yield only)
-mingo-coverage samples.csv --json report.json
+# Fast-track coverage by parsing only the basic JSON report, bypassing full summary sweeps
+mingo-coverage --auto --quick
 
-# Hide low material samples and show samples which miss coverage target of 55x
-mingo-coverage --auto --hide-low-material --below 55
+# Exclude low material samples and show barcodes which miss the coverage target of 55x (includes ETA to completion if summary found)
+mingo-coverage --auto --no-low-material --below 55
 
 # Using a sequencing summary (recommended for detailed stats)
 mingo-coverage samples.csv --summary summary.txt
