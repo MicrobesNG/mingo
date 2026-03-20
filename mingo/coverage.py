@@ -2,8 +2,77 @@ import json
 import csv
 import sys
 import os
+import glob
 
-def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_below_coverage=None, output_csv=False, bin_threshold=7000, no_low_material=False):
+def get_minknow_reads_tmp_dir():
+    conf_path = '/opt/ont/minknow/conf/user_conf'
+    if not os.path.exists(conf_path):
+        return None
+    try:
+        with open(conf_path, 'r') as f:
+            data = json.load(f)
+        
+        output_dirs = data.get('user', {}).get('output_dirs', {})
+        base_dir = output_dirs.get('base', {}).get('value0', '/var/lib/minknow/data')
+        reads_tmp = output_dirs.get('reads_tmp', {}).get('value0', 'reads/tmp')
+        
+        if os.path.isabs(reads_tmp):
+            return reads_tmp
+        else:
+            return os.path.join(base_dir, reads_tmp)
+    except Exception as e:
+        print(f"Warning: Failed to parse MinKNOW conf for tmp directory: {e}")
+        return None
+
+def find_coverage_inputs(run_dir, quick=False):
+    """
+    Auto-discovers the sample sheet, sequencing summary (or tmp), and report JSON from a run directory.
+    Returns: (csv_path, summary_path, json_path)
+    """
+    cwd_name = os.path.basename(os.path.abspath(run_dir))
+    
+    sample_sheets = glob.glob(os.path.join(run_dir, 'no_sample_id', '*', 'sample_sheet*.csv'))
+    if not sample_sheets:
+        raise FileNotFoundError("No sample sheet found via 'no_sample_id/*/sample_sheet*.csv'")
+    elif len(sample_sheets) > 1:
+        raise ValueError("Multiple sample sheets found. Cannot determine which to use.")
+        
+    csv_path = sample_sheets[0]
+    sheet_dir = os.path.dirname(csv_path)
+    
+    summaries = glob.glob(os.path.join(run_dir, 'no_sample_id', '*', 'sequencing_summary*.txt'))
+    if not summaries:
+        reads_tmp_dir = get_minknow_reads_tmp_dir()
+        if reads_tmp_dir:
+            tmp_pattern = os.path.join(reads_tmp_dir, '*', cwd_name, 'no_sample_id', '*', 'sequencing_summary*.txt.tmp')
+            summaries = glob.glob(tmp_pattern)
+        else:
+            summaries = glob.glob(os.path.join(run_dir, 'no_sample_id', '*', 'sequencing_summary*.txt.tmp'))
+            
+    reports = glob.glob(os.path.join(run_dir, 'no_sample_id', '*', 'report*.json'))
+    
+    summary_path = None
+    json_path = None
+    if summaries and not quick:
+        if len(summaries) > 1:
+            raise ValueError("Multiple sequencing summaries found.")
+        summary_path = summaries[0]
+        # Verify suffix match
+        rel_sheet = os.path.relpath(sheet_dir, run_dir)
+        if not os.path.dirname(summary_path).endswith(rel_sheet):
+            raise ValueError(f"Sample sheet and summary are in mismatched subdirectories. Summary: {summary_path}")
+    else:
+        if not reports:
+            raise FileNotFoundError("No JSON report found (and no sequencing summary found or --quick specified).")
+        elif len(reports) > 1:
+            raise ValueError("Multiple JSON reports found.")
+        json_path = reports[0]
+        if sheet_dir != os.path.dirname(json_path):
+            raise ValueError(f"Sample sheet and report are in different subdirectories.")
+            
+    return csv_path, summary_path, json_path
+
+def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_below_coverage=None, output_csv=False, bin_threshold=7000, no_low_material=False, quiet=False):
     # 1. Parse CSV
     samples = {}
     csv_exp_id = None
@@ -17,6 +86,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 
                 samples[barcode] = {
                     'alias': row['alias'],
+                    'type': row.get('type', 'test_sample'),
                     'genome_size_mb': float(row['cntn_cf_genomeSizeMb']) if row['cntn_cf_genomeSizeMb'] else 0,
                     'experiment_id': row['experiment_id'],
                     'low_material': low_mat_val
@@ -127,28 +197,31 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
         cols += ['avg_len', 'short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len']
 
     thresh_kb = f"{bin_threshold/1000:g}kb"
-    if output_csv:
-        writer = csv.writer(sys.stdout)
-        csv_cols = [c if c not in ['short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len'] else 
-                    c.replace('short', f'<{thresh_kb}').replace('long', f'>={thresh_kb}') for c in cols]
-        writer.writerow(csv_cols)
-    else:
-        header_map = {
-            'alias': f"{'alias':<15}",
-            'barcode': f"{'barcode':<12}",
-            'low_mat': f"{'low_mat':<8}",
-            'total_mb': f"{'yield (Mb)':>10}",
-            'genome_mb': f"{'genome (Mb)':>12}",
-            'coverage': f"{'cov':>6}",
-            'eta': f"{'eta':>11}",
-            'avg_len': f"{'avg_len':>8}",
-            'short_total_mb': f"{f'<{thresh_kb} yield':>12}",
-            'short_avg_len': f"{f'<{thresh_kb} avg':>10}",
-            'long_total_mb': f"{f'>={thresh_kb} yield':>12}",
-            'long_avg_len': f"{f'>={thresh_kb} avg':>10}"
-        }
-        print(" ".join([header_map[c] for c in cols]))
-        print("-" * (128 if summary_path else 68))
+    if not quiet:
+        if output_csv:
+            writer = csv.writer(sys.stdout)
+            csv_cols = [c if c not in ['short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len'] else 
+                        c.replace('short', f'<{thresh_kb}').replace('long', f'>={thresh_kb}') for c in cols]
+            writer.writerow(csv_cols)
+        else:
+            header_map = {
+                'alias': f"{'alias':<15}",
+                'barcode': f"{'barcode':<12}",
+                'low_mat': f"{'low_mat':<8}",
+                'total_mb': f"{'yield (Mb)':>10}",
+                'genome_mb': f"{'genome (Mb)':>12}",
+                'coverage': f"{'cov':>6}",
+                'eta': f"{'eta':>11}",
+                'avg_len': f"{'avg_len':>8}",
+                'short_total_mb': f"{f'<{thresh_kb} yield':>12}",
+                'short_avg_len': f"{f'<{thresh_kb} avg':>10}",
+                'long_total_mb': f"{f'>={thresh_kb} yield':>12}",
+                'long_avg_len': f"{f'>={thresh_kb} avg':>10}"
+            }
+            print(" ".join([header_map[c] for c in cols]))
+            print("-" * (128 if summary_path else 68))
+    
+    results_out = []
     
     for barcode, info in sorted(samples.items()):
         # Low material filter
@@ -179,11 +252,14 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 
         row_data = {
             'alias': info['alias'][:12] + "..." if len(info['alias']) > 14 else info['alias'],
+            'full_alias': info['alias'],
+            'type': info['type'],
             'barcode': barcode,
             'low_mat': "Y" if info['low_material'] else " ",
             'total_mb': f"{total_mb:.2f}",
             'genome_mb': f"{genome_mb:.2f}",
             'coverage': f"{coverage:.1f}",
+            'coverage_float': float(coverage),
             'eta': eta_str,
             'avg_len': f"{int(y['bases']/y['reads'])}" if y['reads'] > 0 else "0",
             'short_total_mb': f"{y['short_bases']/1_000_000:.2f}",
@@ -191,22 +267,27 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             'long_total_mb': f"{y['long_bases']/1_000_000:.2f}",
             'long_avg_len': f"{int(y['long_bases']/y['long_reads'])}" if y['long_reads'] > 0 else "0"
         }
+        
+        results_out.append(row_data)
 
-        if output_csv:
-            writer.writerow([row_data[c] for c in cols])
-        else:
-            fmt_map = {
-                'alias': f"{row_data['alias']:<15}",
-                'barcode': f"{row_data['barcode']:<12}",
-                'low_mat': f"{row_data['low_mat']:<8}",
-                'total_mb': f"{row_data['total_mb']:>10}",
-                'genome_mb': f"{row_data['genome_mb']:>12}",
-                'coverage': f"{row_data['coverage']:>6}",
-                'eta': f"{row_data['eta']:>11}",
-                'avg_len': f"{row_data['avg_len']:>8}",
-                'short_total_mb': f"{row_data['short_total_mb']:>12}",
-                'short_avg_len': f"{row_data['short_avg_len']:>10}",
-                'long_total_mb': f"{row_data['long_total_mb']:>12}",
-                'long_avg_len': f"{row_data['long_avg_len']:>10}"
-            }
-            print(" ".join([fmt_map[c] for c in cols]))
+        if not quiet:
+            if output_csv:
+                writer.writerow([row_data[c] for c in cols])
+            else:
+                fmt_map = {
+                    'alias': f"{row_data['alias']:<15}",
+                    'barcode': f"{row_data['barcode']:<12}",
+                    'low_mat': f"{row_data['low_mat']:<8}",
+                    'total_mb': f"{row_data['total_mb']:>10}",
+                    'genome_mb': f"{row_data['genome_mb']:>12}",
+                    'coverage': f"{row_data['coverage']:>6}",
+                    'eta': f"{row_data['eta']:>11}",
+                    'avg_len': f"{row_data['avg_len']:>8}",
+                    'short_total_mb': f"{row_data['short_total_mb']:>12}",
+                    'short_avg_len': f"{row_data['short_avg_len']:>10}",
+                    'long_total_mb': f"{row_data['long_total_mb']:>12}",
+                    'long_avg_len': f"{row_data['long_avg_len']:>10}"
+                }
+                print(" ".join([fmt_map[c] for c in cols]))
+
+    return results_out

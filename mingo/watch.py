@@ -8,6 +8,7 @@ from slack_sdk.webhook import WebhookClient
 from minknow_api import protocol_pb2
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from .coverage import run_coverage_analysis, find_coverage_inputs
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,7 @@ class MinKNOWWatcher:
         self.threads = []
         self._stop_event = threading.Event()
         self.file_observers = {}  # pos.name -> (Observer, path)
+        self.coverage_threads = {} # pos.name -> (Thread, Event)
 
     def log_data_file(self, pos_name: str, filename: str):
         logger.info(f"[{pos_name}] Wrote data file: {filename}")
@@ -86,6 +88,86 @@ class MinKNOWWatcher:
                 logger.debug(f"[{pos_name}] Stopped filesystem watcher on {path}")
             except Exception:
                 pass
+                
+    def _coverage_thread_func(self, pos_name: str, output_path: str, stop_event: threading.Event):
+        logger.info(f"[{pos_name}] Started async coverage monitoring on {output_path}")
+        target_coverage = 55.0
+        alerted_50 = False
+        alerted_100 = False
+        last_hourly_alert = time.time()
+        
+        while not stop_event.is_set():
+            # Wait 5 minutes between checks, polling effectively every second for rapid exits
+            for _ in range(300):
+                if stop_event.is_set():
+                    break
+                time.sleep(1)
+                
+            if stop_event.is_set():
+                break
+                
+            try:
+                csv_path, summary_path, json_path = find_coverage_inputs(output_path, quick=False)
+                if not summary_path and not json_path:
+                    continue
+                    
+                results = run_coverage_analysis(
+                    csv_path=csv_path, 
+                    summary_path=summary_path, 
+                    json_path=json_path,
+                    filter_below_coverage=None, 
+                    output_csv=False,
+                    quiet=True
+                )
+                
+                max_cov = 0.0
+                for row in results:
+                    if row.get('type') == 'negative_control':
+                        continue
+                    try:
+                        cov = float(row.get('coverage_float', 0.0))
+                    except (ValueError, TypeError):
+                        cov = 0.0
+                        
+                    if cov > max_cov:
+                        max_cov = cov
+                        
+                msgs = []
+                if max_cov >= (target_coverage * 0.5) and not alerted_50:
+                    alerted_50 = True
+                    msgs.append(f"[{pos_name}] 🚀 First non-control sample hit 50% target ({max_cov:.1f}x / {target_coverage}x)")
+                    
+                if max_cov >= target_coverage and not alerted_100:
+                    alerted_100 = True
+                    msgs.append(f"[{pos_name}] 🎉 First non-control sample hit 100% target ({max_cov:.1f}x / {target_coverage}x)")
+                    
+                now = time.time()
+                if now - last_hourly_alert >= 3600:
+                    last_hourly_alert = now
+                    msgs.append(f"[{pos_name}] ⏱️ Hourly explicit update: Max sample coverage is {max_cov:.1f}x (Target: {target_coverage}x)")
+                    
+                for m in msgs:
+                    logger.info(m)
+                    self.send_slack_notification("coverage", m)
+                    
+            except Exception as e:
+                logger.debug(f"[{pos_name}] Coverage auto-discovery not ready or failed: {e}")
+
+    def _start_coverage_watcher(self, pos_name: str, path: str):
+        self._stop_coverage_watcher(pos_name)
+        if not path:
+            return
+        stop_event = threading.Event()
+        t = threading.Thread(target=self._coverage_thread_func, args=(pos_name, path, stop_event), daemon=True)
+        self.coverage_threads[pos_name] = (t, stop_event)
+        t.start()
+        
+    def _stop_coverage_watcher(self, pos_name: str):
+        if pos_name in self.coverage_threads:
+            t, stop_event = self.coverage_threads.pop(pos_name)
+            stop_event.set()
+            t.join(timeout=2.0)
+            logger.debug(f"[{pos_name}] Stopped async coverage monitoring")
 
 
     def send_slack_notification(self, phase: str, msg: str):
@@ -128,6 +210,16 @@ class MinKNOWWatcher:
                     }
                 }
             ]
+        elif phase == "coverage":
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📊 *Coverage Update*\n{msg}"
+                    }
+                }
+            ]
 
         try:
             response = self.slack_client.send(text=msg, blocks=blocks)
@@ -150,7 +242,7 @@ class MinKNOWWatcher:
 
         if should_emit:
             logger.info(message)
-            if phase in ["starting", "finished", "error", "info_starting", "info_finished"]:
+            if phase in ["starting", "finished", "error", "info_starting", "info_finished", "coverage"]:
                 self.send_slack_notification(phase, message)
 
     def _watch_position(self, pos):
@@ -215,11 +307,12 @@ class MinKNOWWatcher:
                             output_path = getattr(run_info, 'output_path', None) or getattr(msg, 'output_path', None)
                             if output_path and is_user_protocol:
                                 self._start_directory_watcher(pos.name, output_path)
+                                self._start_coverage_watcher(pos.name, output_path)
 
-                            phase = "starting" if is_user_protocol else "info_starting"
-                            if not announced_start:
-                                self.log_and_notify(phase, f"{message} started.", is_user_protocol)
-                                announced_start = True
+                        phase = "starting" if is_user_protocol else "info_starting"
+                        if not announced_start:
+                            self.log_and_notify(phase, f"{message} started.", is_user_protocol)
+                            announced_start = True
                             
                         elif msg.state == protocol_pb2.PROTOCOL_COMPLETED:
                             # Calculate duration if possible
@@ -232,11 +325,13 @@ class MinKNOWWatcher:
                                 
                             phase = "finished" if is_user_protocol else "info_finished"
                             self._stop_directory_watcher(pos.name)
+                            self._stop_coverage_watcher(pos.name)
                             self.log_and_notify(phase, f"{message} finished{duration_str}.", is_user_protocol)
                             
                         elif msg.state in ERROR_STATES:
                             phase = "error"
                             self._stop_directory_watcher(pos.name)
+                            self._stop_coverage_watcher(pos.name)
                             report = ERROR_STATES[msg.state]
                             self.log_and_notify(phase, f"{message} stopped with error: {report}", is_user_protocol)
                             
@@ -251,6 +346,7 @@ class MinKNOWWatcher:
 
                             phase = "finished" if is_user_protocol else "info_finished"
                             self._stop_directory_watcher(pos.name)
+                            self._stop_coverage_watcher(pos.name)
                             self.log_and_notify(phase, f"{message} was stopped by user{duration_str}.", is_user_protocol)
                             
             except Exception as e:
@@ -277,5 +373,7 @@ class MinKNOWWatcher:
         self._stop_event.set()
         for pos_name in list(self.file_observers.keys()):
             self._stop_directory_watcher(pos_name)
+        for pos_name in list(self.coverage_threads.keys()):
+            self._stop_coverage_watcher(pos_name)
         for t in self.threads:
             t.join(timeout=2.0)
