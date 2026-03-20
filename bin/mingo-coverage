@@ -7,7 +7,28 @@ import glob
 # Add the project root to sys.path to allow imports from mingo
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import json
 from mingo.coverage import run_coverage_analysis
+
+def get_minknow_reads_tmp_dir():
+    conf_path = '/opt/ont/minknow/conf/user_conf'
+    if not os.path.exists(conf_path):
+        return None
+    try:
+        with open(conf_path, 'r') as f:
+            data = json.load(f)
+        
+        output_dirs = data.get('user', {}).get('output_dirs', {})
+        base_dir = output_dirs.get('base', {}).get('value0', '/var/lib/minknow/data')
+        reads_tmp = output_dirs.get('reads_tmp', {}).get('value0', 'reads/tmp')
+        
+        if os.path.isabs(reads_tmp):
+            return reads_tmp
+        else:
+            return os.path.join(base_dir, reads_tmp)
+    except Exception as e:
+        print(f"Warning: Failed to parse MinKNOW conf for tmp directory: {e}")
+        return None
 
 def main():
     parser = argparse.ArgumentParser(description="Calculate genome coverage from ONT reports and sample sheets.")
@@ -48,7 +69,12 @@ def main():
             
         summaries = glob.glob('no_sample_id/*/sequencing_summary*.txt')
         if not summaries:
-            summaries = glob.glob('no_sample_id/*/sequencing_summary*.txt.tmp')
+            reads_tmp_dir = get_minknow_reads_tmp_dir()
+            if reads_tmp_dir:
+                tmp_pattern = os.path.join(reads_tmp_dir, '*', cwd_name, 'no_sample_id', '*', 'sequencing_summary*.txt.tmp')
+                summaries = glob.glob(tmp_pattern)
+            else:
+                summaries = glob.glob('no_sample_id/*/sequencing_summary*.txt.tmp')
             
         reports = glob.glob('no_sample_id/*/report*.json')
         
