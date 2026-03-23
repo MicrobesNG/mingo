@@ -2,3 +2,4 @@ slack_sdk
 minknow-api
 requests
 boto3
+watchdog

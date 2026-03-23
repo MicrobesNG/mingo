@@ -1,12 +1,27 @@
 import logging
 import threading
 import time
+import os
 from typing import Optional
 from minknow_api.manager import Manager
 from slack_sdk.webhook import WebhookClient
 from minknow_api import protocol_pb2
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 logger = logging.getLogger(__name__)
+
+class BatchFileHandler(FileSystemEventHandler):
+    def __init__(self, pos_name, log_callback):
+        self.pos_name = pos_name
+        self.log_callback = log_callback
+        
+    def on_created(self, event):
+        if not event.is_directory:
+            ext = os.path.splitext(event.src_path)[1].lower()
+            if ext in [".fastq", ".gz", ".pod5"]:
+                filename = os.path.basename(event.src_path)
+                self.log_callback(self.pos_name, filename)
 
 ERROR_STATES = {
     protocol_pb2.PROTOCOL_FINISHED_WITH_ERROR: "Error",
@@ -37,6 +52,41 @@ class MinKNOWWatcher:
         self.slack_client = WebhookClient(slack_webhook_url) if slack_webhook_url else None
         self.threads = []
         self._stop_event = threading.Event()
+        self.file_observers = {}  # pos.name -> (Observer, path)
+
+    def log_data_file(self, pos_name: str, filename: str):
+        logger.info(f"[{pos_name}] Wrote data file: {filename}")
+
+    def _start_directory_watcher(self, pos_name: str, path: str):
+        current_observer = self.file_observers.get(pos_name)
+        if current_observer and current_observer[1] == path:
+            return  # Already watching this exact path
+            
+        self._stop_directory_watcher(pos_name)
+        if not path:
+            return
+            
+        try:
+            os.makedirs(path, exist_ok=True)
+            observer = Observer()
+            handler = BatchFileHandler(pos_name, self.log_data_file)
+            observer.schedule(handler, path, recursive=True)
+            observer.start()
+            self.file_observers[pos_name] = (observer, path)
+            logger.debug(f"[{pos_name}] Started filesystem watcher on {path}")
+        except Exception as e:
+            logger.error(f"[{pos_name}] Failed to start filesystem watcher on {path}: {e}")
+
+    def _stop_directory_watcher(self, pos_name: str):
+        if pos_name in self.file_observers:
+            observer, path = self.file_observers.pop(pos_name)
+            try:
+                observer.stop()
+                observer.join(timeout=1.0)
+                logger.debug(f"[{pos_name}] Stopped filesystem watcher on {path}")
+            except Exception:
+                pass
+
 
     def send_slack_notification(self, phase: str, msg: str):
         if not self.slack_client:
@@ -108,6 +158,9 @@ class MinKNOWWatcher:
         is_first_message = True
         last_announced_state = None
         
+        current_run_id = None
+        announced_start = False
+        
         while not self._stop_event.is_set():
             try:
                 with pos.connect() as connection:
@@ -115,11 +168,17 @@ class MinKNOWWatcher:
                         if self._stop_event.is_set():
                             break
 
+                        if msg.run_id != current_run_id:
+                            current_run_id = msg.run_id
+                            announced_start = False
+
                         current_signature = (msg.run_id, msg.state)
                         
                         if is_first_message:
                             last_announced_state = current_signature
                             is_first_message = False
+                            if msg.state == protocol_pb2.PROTOCOL_RUNNING:
+                                announced_start = True
                             continue
                             
                         if current_signature == last_announced_state:
@@ -152,8 +211,15 @@ class MinKNOWWatcher:
                         message = f"[{pos.name}] {protocol_id} (Run: {experiment_id})"
                         
                         if msg.state == protocol_pb2.PROTOCOL_RUNNING:
+                            # Start watcher when running starts
+                            output_path = getattr(run_info, 'output_path', None) or getattr(msg, 'output_path', None)
+                            if output_path and is_user_protocol:
+                                self._start_directory_watcher(pos.name, output_path)
+
                             phase = "starting" if is_user_protocol else "info_starting"
-                            self.log_and_notify(phase, f"{message} started.", is_user_protocol)
+                            if not announced_start:
+                                self.log_and_notify(phase, f"{message} started.", is_user_protocol)
+                                announced_start = True
                             
                         elif msg.state == protocol_pb2.PROTOCOL_COMPLETED:
                             # Calculate duration if possible
@@ -165,10 +231,12 @@ class MinKNOWWatcher:
                                 duration_str = f" after {hours}h {minutes}m {seconds}s"
                                 
                             phase = "finished" if is_user_protocol else "info_finished"
+                            self._stop_directory_watcher(pos.name)
                             self.log_and_notify(phase, f"{message} finished{duration_str}.", is_user_protocol)
                             
                         elif msg.state in ERROR_STATES:
                             phase = "error"
+                            self._stop_directory_watcher(pos.name)
                             report = ERROR_STATES[msg.state]
                             self.log_and_notify(phase, f"{message} stopped with error: {report}", is_user_protocol)
                             
@@ -182,6 +250,7 @@ class MinKNOWWatcher:
                                 duration_str = f" after {hours}h {minutes}m {seconds}s"
 
                             phase = "finished" if is_user_protocol else "info_finished"
+                            self._stop_directory_watcher(pos.name)
                             self.log_and_notify(phase, f"{message} was stopped by user{duration_str}.", is_user_protocol)
                             
             except Exception as e:
@@ -206,5 +275,7 @@ class MinKNOWWatcher:
             
     def stop(self):
         self._stop_event.set()
+        for pos_name in list(self.file_observers.keys()):
+            self._stop_directory_watcher(pos_name)
         for t in self.threads:
             t.join(timeout=2.0)

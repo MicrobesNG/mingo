@@ -7,7 +7,28 @@ import glob
 # Add the project root to sys.path to allow imports from mingo
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import json
 from mingo.coverage import run_coverage_analysis
+
+def get_minknow_reads_tmp_dir():
+    conf_path = '/opt/ont/minknow/conf/user_conf'
+    if not os.path.exists(conf_path):
+        return None
+    try:
+        with open(conf_path, 'r') as f:
+            data = json.load(f)
+        
+        output_dirs = data.get('user', {}).get('output_dirs', {})
+        base_dir = output_dirs.get('base', {}).get('value0', '/var/lib/minknow/data')
+        reads_tmp = output_dirs.get('reads_tmp', {}).get('value0', 'reads/tmp')
+        
+        if os.path.isabs(reads_tmp):
+            return reads_tmp
+        else:
+            return os.path.join(base_dir, reads_tmp)
+    except Exception as e:
+        print(f"Warning: Failed to parse MinKNOW conf for tmp directory: {e}")
+        return None
 
 def main():
     parser = argparse.ArgumentParser(description="Calculate genome coverage from ONT reports and sample sheets.")
@@ -18,6 +39,7 @@ def main():
     group.add_argument("--auto", action="store_true", help="Automatically find inputs in an ONT run directory.")
     group.add_argument("--json", help="Path to the sequencing report JSON file.")
     
+    parser.add_argument("--quick", action="store_true", help="Use simplified JSON report coverage instead of full sequencing summary (when using --auto).")
     parser.add_argument("--summary", help="Path to the sequencing summary TXT file.")
     parser.add_argument("--below", type=int, help="Only output lines where coverage is below this value.")
     parser.add_argument("--bin-threshold", type=int, default=7000, help="Read length threshold for binned stats (default: 7000).")
@@ -42,22 +64,41 @@ def main():
             print("Error: Multiple sample sheets found in no_sample_id directory structure. Cannot determine which to use.")
             sys.exit(1)
             
-        if not reports:
-            print("Error: No JSON report found via 'no_sample_id/*/report*.json'")
-            sys.exit(1)
-        elif len(reports) > 1:
-            print("Error: Multiple JSON reports found in no_sample_id directory structure. Cannot determine which to use.")
-            sys.exit(1)
-            
-        sheet_dir = os.path.dirname(sample_sheets[0])
-        report_dir = os.path.dirname(reports[0])
-        
-        if sheet_dir != report_dir:
-            print(f"Error: Sample sheet and report are in different subdirectories:\nSheet dir:  {sheet_dir}\nReport dir: {report_dir}")
-            sys.exit(1)
-            
         args.csv_path = sample_sheets[0]
-        args.json = reports[0]
+        sheet_dir = os.path.dirname(args.csv_path)
+            
+        summaries = glob.glob('no_sample_id/*/sequencing_summary*.txt')
+        if not summaries:
+            reads_tmp_dir = get_minknow_reads_tmp_dir()
+            if reads_tmp_dir:
+                tmp_pattern = os.path.join(reads_tmp_dir, '*', cwd_name, 'no_sample_id', '*', 'sequencing_summary*.txt.tmp')
+                summaries = glob.glob(tmp_pattern)
+            else:
+                summaries = glob.glob('no_sample_id/*/sequencing_summary*.txt.tmp')
+            
+        reports = glob.glob('no_sample_id/*/report*.json')
+        
+        if summaries and not args.quick:
+            if len(summaries) > 1:
+                print("Error: Multiple sequencing summaries found in no_sample_id directory structure. Cannot determine which to use.")
+                sys.exit(1)
+            args.summary = summaries[0]
+            summary_dir = os.path.dirname(args.summary)
+            if not summary_dir.endswith(sheet_dir):
+                print(f"Error: Sample sheet and summary are in mismatched subdirectories:\nSheet dir:  {sheet_dir}\nSummary dir: {summary_dir}")
+                sys.exit(1)
+        else:
+            if not reports:
+                print("Error: No JSON report found (and no sequencing summary found or --quick specified).")
+                sys.exit(1)
+            elif len(reports) > 1:
+                print("Error: Multiple JSON reports found in no_sample_id directory structure. Cannot determine which to use.")
+                sys.exit(1)
+            args.json = reports[0]
+            report_dir = os.path.dirname(args.json)
+            if sheet_dir != report_dir:
+                print(f"Error: Sample sheet and report are in different subdirectories:\nSheet dir:  {sheet_dir}\nReport dir: {report_dir}")
+                sys.exit(1)
     elif not args.csv_path:
         parser.error("The following arguments are required: csv_path (unless --auto is used)")
     
