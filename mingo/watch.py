@@ -98,7 +98,7 @@ class MinKNOWWatcher:
         
         while not stop_event.is_set():
             # Wait 5 minutes between checks, polling effectively every second for rapid exits
-            for _ in range(300):
+            for _ in range(600):
                 if stop_event.is_set():
                     break
                 time.sleep(1)
@@ -222,7 +222,7 @@ class MinKNOWWatcher:
             ]
 
         try:
-            response = self.slack_client.send(text=msg, blocks=blocks)
+            response = self.slack_client.send(text=msg, blocks=blocks, username="MiNGo")
             if response.status_code != 200:
                 logger.error(f"Failed to send Slack message. Error: {response.body}")
         except Exception as e:
@@ -300,7 +300,7 @@ class MinKNOWWatcher:
                         if self.level == "debug":
                             logger.debug(f"[{pos.name}] State change: {state_name}, run_id={msg.run_id}, user_protocol={is_user_protocol}")
 
-                        message = f"[{pos.name}] {protocol_id} (Run: {experiment_id})"
+                        message = f"*{experiment_id}* (`{pos.name}` | {protocol_id})"
                         
                         if msg.state == protocol_pb2.PROTOCOL_RUNNING:
                             # Start watcher when running starts

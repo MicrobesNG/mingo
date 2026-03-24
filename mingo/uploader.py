@@ -31,7 +31,7 @@ class MingoUploader:
 
     def send_slack_notification(self, message):
         try:
-            response = self.slack_client.send(text=message)
+            response = self.slack_client.send(text=message, username="MiNGo")
             if response.status_code != 200:
                 logger.error(f"Failed to send Slack message. Error: {response.body}")
         except Exception as e:
