@@ -201,7 +201,6 @@ class MingoUploader:
 
     def write_manifest(self, top_run_dir, run_name, manifest_type, manifest_data, order_name=None, s3_bucket=None):
         """Writes a JSON manifest of uploaded files and optionally uploads it to S3."""
-        # Check if manifest data is valid before writing
         if not manifest_data:
             return None
             
@@ -209,6 +208,29 @@ class MingoUploader:
             manifest_filename = f"manifest_{manifest_type}_{order_name}.json"
         else:
             manifest_filename = f"manifest_{manifest_type}_{run_name}.json"
+            
+        if manifest_type == "pod5" and order_name and s3_bucket:
+            prefix = f"{self.s3_root_folder}/" if self.s3_root_folder else ""
+            dest_key = f"{prefix}{order_name}/{manifest_filename}"
+            bucket_name, dest_key = self._split_bucket_prefix(s3_bucket, dest_key)
+            
+            try:
+                response = self.s3_client.get_object(Bucket=bucket_name, Key=dest_key)
+                existing_data = json.loads(response['Body'].read().decode('utf-8'))
+                
+                # Merge existing URIs with new ones
+                if isinstance(existing_data, list):
+                    existing_uris = {item.get('s3_uri') for item in existing_data if isinstance(item, dict)}
+                    for item in manifest_data:
+                        if item.get('s3_uri') not in existing_uris:
+                            existing_data.append(item)
+                    manifest_data = existing_data
+                    logger.info(f"Merged new uploads with existing manifest {dest_key}")
+            except ClientError as e:
+                if e.response['Error']['Code'] not in ['NoSuchKey', '404']:
+                    logger.warning(f"Failed to fetch existing manifest {dest_key}, proceeding with override: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to parse existing manifest {dest_key}, proceeding with override: {e}")
             
         manifest_path = os.path.join(top_run_dir, manifest_filename)
         
