@@ -142,12 +142,14 @@ mingo-upload
 
 ## Run Watcher
 
-A daemon (`bin/mingo-watch`) that uses MinKNOW's gRPC stream to hook into all flow cells and report ongoing status transitions. It deduplicates MinKNOW states to avoid notification spam and distinguishes between internal hardware routines and user protocols (i.e. runs).
+A daemon (`bin/mingo-watch`) that uses MinKNOW's gRPC stream to hook into all flow cells and report ongoing status transitions. It deduplicates MinKNOW states to avoid notification spam, distinguishes between internal hardware routines and user protocols, and automatically includes the sequencer hostname in all logs and Slack notifications.
+
+If started while a run is already underway, it attaches cleanly and launches local directory/coverage watchers with an `attached` notice rather than a duplicate `started` alert. When monitoring a remote MinKNOW instance, it logs a warning if the remote run directory is not mounted locally.
 
 ### Parameters
 * `--host` / `--port`: Address of the sequencer running MinKNOW (default: `localhost` - port can be omitted).
 * `--level`: Verbosity of the monitoring stream.
-  * `normal` (default): Only emits messages and Slack notifications when standard User Protocols start, error out, or finish smoothly. Discards calibration runs.
+  * `normal` (default): Only emits messages and Slack notifications when standard User Protocols start, attach, error out, or finish smoothly. Discards calibration runs.
   * `info`: Additionally broadcasts MinKNOW internal tests including flow cell pings and hardware checks.
   * `debug`: All underlying events
 * `--notify-slack`: Enable Slack webhooks for any of the above thresholds.

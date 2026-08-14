@@ -35,7 +35,7 @@ def main():
 
     watcher = MinKNOWWatcher(host=args.host, port=args.port, level=args.level, slack_webhook_url=slack_webhook_url)
     
-    logging.info(f"Starting MinKNOW watcher on {args.host} (Level: {args.level})")
+    logging.info(f"Starting MinKNOW watcher on {watcher.host_name} (host: {args.host}, Level: {args.level})")
     try:
         watcher.start()
         # Keep main thread alive
