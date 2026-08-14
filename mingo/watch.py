@@ -71,6 +71,16 @@ ERROR_STATES = {
     protocol_pb2.PROTOCOL_FINISHED_WITH_ERROR_BASECALLER_UNAVAILABLE: "No basecaller found",
 }
 
+def make_progress_bar(current: float, target: float, length: int = 10) -> str:
+    """Renders a text-based progress bar for Slack."""
+    if target <= 0:
+        pct = 1.0
+    else:
+        pct = min(max(current / target, 0.0), 1.0)
+    filled = int(round(pct * length))
+    bar = "▰" * filled + "▱" * (length - filled)
+    return f"`{bar}` *{pct * 100:.1f}%* ({current:.1f}x / {target:.1f}x)"
+
 class MinKNOWWatcher:
     """Daemon class to hook into MinKNOW positions and stream protocol events."""
     def __init__(self, host: str = "localhost", port: Optional[int] = None, 
@@ -181,23 +191,51 @@ class MinKNOWWatcher:
                     if cov > max_cov:
                         max_cov = cov
                         
-                msgs = []
                 if max_cov >= (target_coverage * 0.5) and not alerted_50:
                     alerted_50 = True
-                    msgs.append(f"[{self.host_name}:{pos_name}] 🚀 First non-control sample hit 50% target ({max_cov:.1f}x / {target_coverage}x)")
+                    progress = make_progress_bar(max_cov, target_coverage)
+                    msg_text = f"[{self.host_name}:{pos_name}] 🚀 First non-control sample reached 50% target ({max_cov:.1f}x / {target_coverage}x)"
+                    logger.info(msg_text)
+                    self.send_slack_notification(
+                        "coverage_50", 
+                        msg_text,
+                        pos_name=pos_name,
+                        extra_fields=[
+                            ("Progress", progress),
+                            ("Max Sample Coverage", f"📈 *{max_cov:.1f}x* / {target_coverage}x"),
+                        ]
+                    )
                     
                 if max_cov >= target_coverage and not alerted_100:
                     alerted_100 = True
-                    msgs.append(f"[{self.host_name}:{pos_name}] 🎉 First non-control sample hit 100% target ({max_cov:.1f}x / {target_coverage}x)")
+                    progress = make_progress_bar(max_cov, target_coverage)
+                    msg_text = f"[{self.host_name}:{pos_name}] 🎉 First non-control sample reached 100% target ({max_cov:.1f}x / {target_coverage}x)"
+                    logger.info(msg_text)
+                    self.send_slack_notification(
+                        "coverage_100", 
+                        msg_text,
+                        pos_name=pos_name,
+                        extra_fields=[
+                            ("Progress", progress),
+                            ("Max Sample Coverage", f"🎯 *{max_cov:.1f}x* / {target_coverage}x"),
+                        ]
+                    )
                     
                 now = time.time()
                 if now - last_hourly_alert >= 3600:
                     last_hourly_alert = now
-                    msgs.append(f"[{self.host_name}:{pos_name}] ⏱️ Hourly explicit update: Max sample coverage is {max_cov:.1f}x (Target: {target_coverage}x)")
-                    
-                for m in msgs:
-                    logger.info(m)
-                    self.send_slack_notification("coverage", m)
+                    progress = make_progress_bar(max_cov, target_coverage)
+                    msg_text = f"[{self.host_name}:{pos_name}] ⏱️ Hourly update: Max sample coverage is {max_cov:.1f}x (Target: {target_coverage}x)"
+                    logger.info(msg_text)
+                    self.send_slack_notification(
+                        "coverage_hourly", 
+                        msg_text,
+                        pos_name=pos_name,
+                        extra_fields=[
+                            ("Progress", progress),
+                            ("Max Sample Coverage", f"📈 *{max_cov:.1f}x* / {target_coverage}x"),
+                        ]
+                    )
                     
             except Exception as e:
                 logger.debug(f"[{self.host_name}:{pos_name}] Coverage auto-discovery not ready or failed: {e}")
@@ -224,89 +262,128 @@ class MinKNOWWatcher:
             t.join(timeout=2.0)
             logger.debug(f"[{self.host_name}:{pos_name}] Stopped async coverage monitoring")
 
-    def send_slack_notification(self, phase: str, msg: str):
+    def _build_slack_blocks(self, phase: str, msg: str,
+                            experiment_id: Optional[str] = None,
+                            pos_name: Optional[str] = None,
+                            protocol_id: Optional[str] = None,
+                            duration_str: Optional[str] = None,
+                            error_detail: Optional[str] = None,
+                            extra_fields: Optional[list] = None):
+        """Constructs rich Slack Block Kit attachments with consistent branding and status styling."""
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        host = self.host_name
+
+        phase_config = {
+            "starting": ("#2EB67D", "🟢 Sequencing Run Started"),
+            "info_starting": ("#2EB67D", "🟢 Routine / Internal Run Started"),
+            "attached": ("#4A90E2", "🔗 Attached to In-Progress Run"),
+            "info_attached": ("#4A90E2", "🔗 Attached to Routine Run"),
+            "finished": ("#27AE60", "🏁 Sequencing Run Finished"),
+            "info_finished": ("#27AE60", "🏁 Routine Run Finished"),
+            "error": ("#E01E5A", "❌ Sequencing Run Error"),
+            "stopped": ("#ECB22E", "⏹️ Run Stopped by User"),
+            "coverage_50": ("#ECB22E", "🚀 Coverage Milestone (50% Reached)"),
+            "coverage_100": ("#00B894", "🎉 Coverage Target Met (100% Reached)"),
+            "coverage_hourly": ("#0984E3", "⏱️ Hourly Coverage Update"),
+            "coverage": ("#0984E3", "📊 Coverage Update"),
+        }
+
+        color, header_text = phase_config.get(phase, ("#4A90E2", "🔔 MinKNOW Notification"))
+
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": header_text,
+                    "emoji": True
+                }
+            }
+        ]
+
+        fields = []
+        if experiment_id:
+            fields.append({"type": "mrkdwn", "text": f"*Experiment Group:*\n`{experiment_id}`"})
+        if host and pos_name:
+            fields.append({"type": "mrkdwn", "text": f"*Sequencer & Slot:*\n💻 `{host}` | 📍 `{pos_name}`"})
+        elif host:
+            fields.append({"type": "mrkdwn", "text": f"*Host:*\n💻 `{host}`"})
+
+        if protocol_id:
+            fields.append({"type": "mrkdwn", "text": f"*Protocol:*\n`{protocol_id}`"})
+
+        if duration_str:
+            clean_duration = duration_str.strip().replace("after ", "")
+            fields.append({"type": "mrkdwn", "text": f"*Duration:*\n⏱️ `{clean_duration}`"})
+
+        if error_detail:
+            fields.append({"type": "mrkdwn", "text": f"*Error:*\n⚠️ *{error_detail}*"})
+
+        if extra_fields:
+            for title, value in extra_fields:
+                fields.append({"type": "mrkdwn", "text": f"*{title}:*\n{value}"})
+
+        if fields:
+            blocks.append({
+                "type": "section",
+                "fields": fields
+            })
+        else:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": msg
+                }
+            })
+
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"📡 *MiNGo Watcher* • {now_str}"
+                }
+            ]
+        })
+
+        return color, blocks
+
+    def send_slack_notification(self, phase: str, msg: str, **kwargs):
         if not self.slack_client:
             return
             
-        blocks = []
-        if phase in ["starting", "info_starting"]:
-            blocks = [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"🟢 *Run Started*: {msg}"
-                    }
-                }
-            ]
-        elif phase in ["attached", "info_attached"]:
-            blocks = [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"🔗 *Attached to in-progress run*: {msg}"
-                    }
-                }
-            ]
-        elif phase in ["finished", "info_finished"]:
-            blocks = [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"🏁 *Run Finished*: {msg}"
-                    }
-                }
-            ]
-        elif phase == "error":
-            blocks = [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"❌ *Run Errored*: {msg}"
-                    },
-                    "accessory": {
-                        "type": "image",
-                        "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcREgSDZuZBRAm0ASuRQrpvb91kTrFsbfQDgqw&s",
-                        "alt_text": "Error"
-                    }
-                }
-            ]
-        elif phase == "coverage":
-            blocks = [
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": f"📊 *Coverage Update*\n{msg}"
-                    }
-                }
-            ]
+        color, blocks = self._build_slack_blocks(phase, msg, **kwargs)
 
         try:
-            response = self.slack_client.send(text=msg, blocks=blocks, username=f"MiNGo ({self.host_name})")
+            response = self.slack_client.send(
+                text=msg,
+                attachments=[
+                    {
+                        "color": color,
+                        "blocks": blocks
+                    }
+                ]
+            )
             if response.status_code != 200:
                 logger.error(f"Failed to send Slack message. Error: {response.body}")
         except Exception as e:
             logger.error(f"Error sending Slack notification: {e}")
 
-    def log_and_notify(self, phase: str, message: str, is_user_protocol: bool):
+    def log_and_notify(self, phase: str, message: str, is_user_protocol: bool, **slack_kwargs):
         should_emit = False
         if self.level == "debug":
             should_emit = True
         elif self.level == "info":
-            should_emit = phase in ["starting", "finished", "error", "info_starting", "info_finished", "attached", "info_attached"]
+            should_emit = phase in ["starting", "finished", "error", "stopped", "info_starting", "info_finished", "attached", "info_attached"]
         elif self.level == "normal":
-            # Normal only emits for user protocols
-            if is_user_protocol and phase in ["starting", "finished", "error", "attached"]:
+            if is_user_protocol and phase in ["starting", "finished", "error", "stopped", "attached"]:
                 should_emit = True
 
         if should_emit:
             logger.info(message)
-            if phase in ["starting", "finished", "error", "info_starting", "info_finished", "coverage", "attached", "info_attached"]:
-                self.send_slack_notification(phase, message)
+            if phase in ["starting", "finished", "error", "stopped", "info_starting", "info_finished", "coverage", "attached", "info_attached"]:
+                self.send_slack_notification(phase, message, **slack_kwargs)
 
     def _extract_run_info(self, connection, run_id: str, msg=None):
         """Extract protocol details and output path from MinKNOW run info."""
@@ -371,7 +448,14 @@ class MinKNOWWatcher:
                                     self._start_coverage_watcher(pos.name, output_path)
 
                                 phase = "attached" if is_user_protocol else "info_attached"
-                                self.log_and_notify(phase, f"{message} attached to in-progress run.", is_user_protocol)
+                                self.log_and_notify(
+                                    phase, 
+                                    f"{message} attached to in-progress run.", 
+                                    is_user_protocol,
+                                    experiment_id=experiment_id,
+                                    pos_name=pos.name,
+                                    protocol_id=protocol_id
+                                )
                             continue
                             
                         if current_signature == last_announced_state:
@@ -398,11 +482,17 @@ class MinKNOWWatcher:
 
                         phase = "starting" if is_user_protocol else "info_starting"
                         if not announced_start:
-                            self.log_and_notify(phase, f"{message} started.", is_user_protocol)
+                            self.log_and_notify(
+                                phase, 
+                                f"{message} started.", 
+                                is_user_protocol,
+                                experiment_id=experiment_id,
+                                pos_name=pos.name,
+                                protocol_id=protocol_id
+                            )
                             announced_start = True
                             
                         elif msg.state == protocol_pb2.PROTOCOL_COMPLETED:
-                            # Calculate duration if possible
                             duration_str = ""
                             if run_info and run_info.start_time and run_info.end_time:
                                 duration_seconds = run_info.end_time.seconds - run_info.start_time.seconds
@@ -413,17 +503,31 @@ class MinKNOWWatcher:
                             phase = "finished" if is_user_protocol else "info_finished"
                             self._stop_directory_watcher(pos.name)
                             self._stop_coverage_watcher(pos.name)
-                            self.log_and_notify(phase, f"{message} finished{duration_str}.", is_user_protocol)
+                            self.log_and_notify(
+                                phase, 
+                                f"{message} finished{duration_str}.", 
+                                is_user_protocol,
+                                experiment_id=experiment_id,
+                                pos_name=pos.name,
+                                protocol_id=protocol_id,
+                                duration_str=duration_str
+                            )
                             
                         elif msg.state in ERROR_STATES:
-                            phase = "error"
                             self._stop_directory_watcher(pos.name)
                             self._stop_coverage_watcher(pos.name)
                             report = ERROR_STATES[msg.state]
-                            self.log_and_notify(phase, f"{message} stopped with error: {report}", is_user_protocol)
+                            self.log_and_notify(
+                                "error", 
+                                f"{message} stopped with error: {report}", 
+                                is_user_protocol,
+                                experiment_id=experiment_id,
+                                pos_name=pos.name,
+                                protocol_id=protocol_id,
+                                error_detail=report
+                            )
                             
                         elif msg.state == protocol_pb2.PROTOCOL_STOPPED_BY_USER:
-                            # Calculate duration for stopped runs too
                             duration_str = ""
                             if run_info and run_info.start_time and run_info.end_time:
                                 duration_seconds = run_info.end_time.seconds - run_info.start_time.seconds
@@ -431,10 +535,18 @@ class MinKNOWWatcher:
                                 minutes, seconds = divmod(remainder, 60)
                                 duration_str = f" after {hours}h {minutes}m {seconds}s"
 
-                            phase = "finished" if is_user_protocol else "info_finished"
+                            phase = "stopped" if is_user_protocol else "info_finished"
                             self._stop_directory_watcher(pos.name)
                             self._stop_coverage_watcher(pos.name)
-                            self.log_and_notify(phase, f"{message} was stopped by user{duration_str}.", is_user_protocol)
+                            self.log_and_notify(
+                                phase, 
+                                f"{message} was stopped by user{duration_str}.", 
+                                is_user_protocol,
+                                experiment_id=experiment_id,
+                                pos_name=pos.name,
+                                protocol_id=protocol_id,
+                                duration_str=duration_str
+                            )
                             
             except Exception as e:
                 # If connection fails or stream drops, wait a bit and reconnect

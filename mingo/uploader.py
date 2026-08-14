@@ -29,9 +29,47 @@ class MingoUploader:
         self.slack_webhook_url = slack_webhook_url
         self.slack_client = WebhookClient(self.slack_webhook_url)
 
-    def send_slack_notification(self, message):
+    def send_slack_notification(self, message: str, run_name: str = None, success: bool = True, fastq_count: int = 0, pod5_count: int = 0):
+        color = "#2EB67D" if success else "#E01E5A"
+        header = "📦 S3 Upload Completed Successfully" if success else "❌ S3 Upload Completed with Errors"
+        
+        fields = []
+        if run_name:
+            fields.append({"type": "mrkdwn", "text": f"*Run Name:*\n`{run_name}`"})
+        if self.s3_bucket_fastq:
+            fields.append({"type": "mrkdwn", "text": f"*FASTQ Bucket:*\n`{self.s3_bucket_fastq}`"})
+        if self.s3_bucket_pod5:
+            fields.append({"type": "mrkdwn", "text": f"*POD5 Bucket:*\n`{self.s3_bucket_pod5}`"})
+        if fastq_count or pod5_count:
+            fields.append({"type": "mrkdwn", "text": f"*Upload Summary:*\n⚡ `{fastq_count}` FASTQ, `{pod5_count}` POD5 orders"})
+
+        blocks = [
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": header,
+                    "emoji": True
+                }
+            }
+        ]
+        if fields:
+            blocks.append({"type": "section", "fields": fields})
+        else:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": message}})
+            
+        import time
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"☁️ *MiNGo Uploader* • {now_str}"}]
+        })
+
         try:
-            response = self.slack_client.send(text=message, username="MiNGo")
+            response = self.slack_client.send(
+                text=message,
+                attachments=[{"color": color, "blocks": blocks}]
+            )
             if response.status_code != 200:
                 logger.error(f"Failed to send Slack message. Error: {response.body}")
         except Exception as e:

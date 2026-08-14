@@ -77,5 +77,48 @@ class TestWatch(unittest.TestCase):
             self.assertIn("remote", mock_warn.call_args[0][0])
             self.assertNotIn("1A", watcher.file_observers)
 
+    @patch('mingo.watch.Manager')
+    def test_build_slack_blocks(self, mock_manager):
+        watcher = MinKNOWWatcher(host="pancake", level="normal")
+        
+        # Test Run Started Blocks
+        color, blocks = watcher._build_slack_blocks(
+            "starting",
+            "*NSR_01* (`pancake` | `1A` | seq_proto) started.",
+            experiment_id="NSR_01",
+            pos_name="1A",
+            protocol_id="seq_proto"
+        )
+        self.assertEqual(color, "#2EB67D")
+        self.assertEqual(blocks[0]["type"], "header")
+        self.assertIn("Started", blocks[0]["text"]["text"])
+        self.assertEqual(blocks[1]["type"], "section")
+        field_texts = [f["text"] for f in blocks[1]["fields"]]
+        self.assertTrue(any("NSR_01" in t for t in field_texts))
+        self.assertTrue(any("pancake" in t for t in field_texts))
+
+        # Test Error Blocks
+        color_err, blocks_err = watcher._build_slack_blocks(
+            "error",
+            "Run error",
+            experiment_id="NSR_01",
+            pos_name="1A",
+            error_detail="Flow cell disconnected"
+        )
+        self.assertEqual(color_err, "#E01E5A")
+        self.assertIn("Error", blocks_err[0]["text"]["text"])
+        field_texts_err = [f["text"] for f in blocks_err[1]["fields"]]
+        self.assertTrue(any("Flow cell disconnected" in t for t in field_texts_err))
+
+    def test_make_progress_bar(self):
+        from mingo.watch import make_progress_bar
+        bar_50 = make_progress_bar(27.5, 55.0, length=10)
+        self.assertIn("50.0%", bar_50)
+        self.assertIn("▰▰▰▰▰▱▱▱▱▱", bar_50)
+
+        bar_100 = make_progress_bar(55.0, 55.0, length=10)
+        self.assertIn("100.0%", bar_100)
+        self.assertIn("▰▰▰▰▰▰▰▰▰▰", bar_100)
+
 if __name__ == '__main__':
     unittest.main()
