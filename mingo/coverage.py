@@ -3,6 +3,9 @@ import csv
 import sys
 import os
 import glob
+import logging
+
+logger = logging.getLogger(__name__)
 
 def get_minknow_reads_tmp_dir():
     conf_path = '/opt/ont/minknow/conf/user_conf'
@@ -21,7 +24,7 @@ def get_minknow_reads_tmp_dir():
         else:
             return os.path.join(base_dir, reads_tmp)
     except Exception as e:
-        print(f"Warning: Failed to parse MinKNOW conf for tmp directory: {e}")
+        logger.warning(f"Failed to parse MinKNOW conf for tmp directory: {e}")
         return None
 
 def find_coverage_inputs(run_dir, quick=False):
@@ -29,25 +32,33 @@ def find_coverage_inputs(run_dir, quick=False):
     Auto-discovers the sample sheet, sequencing summary (or tmp), and report JSON from a run directory.
     Returns: (csv_path, summary_path, json_path)
     """
-    cwd_name = os.path.basename(os.path.abspath(run_dir))
+    abs_run_dir = os.path.abspath(run_dir)
+    cwd_name = os.path.basename(abs_run_dir)
     
-    sample_sheets = glob.glob(os.path.join(run_dir, 'no_sample_id', '*', 'sample_sheet*.csv'))
+    sample_sheet_pattern = os.path.join(run_dir, 'no_sample_id', '*', 'sample_sheet*.csv')
+    logger.info(f"Searching for sample sheet with pattern: '{sample_sheet_pattern}' (abs_dir: '{abs_run_dir}')")
+    sample_sheets = glob.glob(sample_sheet_pattern)
     if not sample_sheets:
-        raise FileNotFoundError("No sample sheet found via 'no_sample_id/*/sample_sheet*.csv'")
+        raise FileNotFoundError(f"No sample sheet found via '{sample_sheet_pattern}' (resolved dir: '{abs_run_dir}')")
     elif len(sample_sheets) > 1:
-        raise ValueError("Multiple sample sheets found. Cannot determine which to use.")
+        raise ValueError(f"Multiple sample sheets found in '{sample_sheet_pattern}': {sample_sheets}")
         
     csv_path = sample_sheets[0]
+    logger.info(f"Discovered sample sheet: '{csv_path}'")
     sheet_dir = os.path.dirname(csv_path)
     
-    summaries = glob.glob(os.path.join(run_dir, 'no_sample_id', '*', 'sequencing_summary*.txt'))
+    summary_pattern = os.path.join(run_dir, 'no_sample_id', '*', 'sequencing_summary*.txt')
+    summaries = glob.glob(summary_pattern)
     if not summaries:
         reads_tmp_dir = get_minknow_reads_tmp_dir()
         if reads_tmp_dir:
             tmp_pattern = os.path.join(reads_tmp_dir, '*', cwd_name, 'no_sample_id', '*', 'sequencing_summary*.txt.tmp')
+            logger.info(f"Searching for live summary in tmp dir with pattern: '{tmp_pattern}'")
             summaries = glob.glob(tmp_pattern)
         else:
-            summaries = glob.glob(os.path.join(run_dir, 'no_sample_id', '*', 'sequencing_summary*.txt.tmp'))
+            local_tmp_pattern = os.path.join(run_dir, 'no_sample_id', '*', 'sequencing_summary*.txt.tmp')
+            logger.info(f"Searching for live summary with pattern: '{local_tmp_pattern}'")
+            summaries = glob.glob(local_tmp_pattern)
             
     reports = glob.glob(os.path.join(run_dir, 'no_sample_id', '*', 'report*.json'))
     
