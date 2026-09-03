@@ -155,90 +155,103 @@ class MinKNOWWatcher:
         alerted_100 = False
         last_hourly_alert = time.time()
         
-        while not stop_event.is_set():
-            # Wait 5 minutes between checks, polling effectively every second for rapid exits
-            for _ in range(600):
-                if stop_event.is_set():
-                    break
-                time.sleep(1)
-                
+        # Initial short delay (15s) before first evaluation to let directory settle
+        for _ in range(15):
             if stop_event.is_set():
-                break
-                
+                return
+            time.sleep(1)
+
+        while not stop_event.is_set():
             try:
                 csv_path, summary_path, json_path = find_coverage_inputs(output_path, quick=False)
                 if not summary_path and not json_path:
-                    continue
+                    logger.info(f"[{self.host_name}:{pos_name}] Coverage check: Sample sheet found ({os.path.basename(csv_path)}), waiting for summary or report...")
+                else:
+                    input_source = os.path.basename(summary_path) if summary_path else os.path.basename(json_path)
+                    results = run_coverage_analysis(
+                        csv_path=csv_path, 
+                        summary_path=summary_path, 
+                        json_path=json_path,
+                        filter_below_coverage=None, 
+                        output_csv=False,
+                        quiet=True
+                    )
                     
-                results = run_coverage_analysis(
-                    csv_path=csv_path, 
-                    summary_path=summary_path, 
-                    json_path=json_path,
-                    filter_below_coverage=None, 
-                    output_csv=False,
-                    quiet=True
-                )
-                
-                max_cov = 0.0
-                for row in results:
-                    if row.get('type') == 'negative_control':
-                        continue
-                    try:
-                        cov = float(row.get('coverage_float', 0.0))
-                    except (ValueError, TypeError):
-                        cov = 0.0
+                    max_cov = 0.0
+                    evaluated_count = 0
+                    for row in results:
+                        if row.get('type') == 'negative_control':
+                            continue
+                        evaluated_count += 1
+                        try:
+                            cov = float(row.get('coverage_float', 0.0))
+                        except (ValueError, TypeError):
+                            cov = 0.0
+                            
+                        if cov > max_cov:
+                            max_cov = cov
+                            
+                    logger.info(
+                        f"[{self.host_name}:{pos_name}] Coverage check: Max sample coverage is {max_cov:.1f}x / {target_coverage:.1f}x "
+                        f"({evaluated_count} non-control samples evaluated from {input_source})"
+                    )
+
+                    if max_cov >= (target_coverage * 0.5) and not alerted_50:
+                        alerted_50 = True
+                        progress = make_progress_bar(max_cov, target_coverage)
+                        msg_text = f"[{self.host_name}:{pos_name}] 🚀 First non-control sample reached 50% target ({max_cov:.1f}x / {target_coverage}x)"
+                        logger.info(msg_text)
+                        self.send_slack_notification(
+                            "coverage_50", 
+                            msg_text,
+                            pos_name=pos_name,
+                            extra_fields=[
+                                ("Progress", progress),
+                                ("Max Sample Coverage", f"📈 *{max_cov:.1f}x* / {target_coverage}x"),
+                            ]
+                        )
                         
-                    if cov > max_cov:
-                        max_cov = cov
+                    if max_cov >= target_coverage and not alerted_100:
+                        alerted_100 = True
+                        progress = make_progress_bar(max_cov, target_coverage)
+                        msg_text = f"[{self.host_name}:{pos_name}] 🎉 First non-control sample reached 100% target ({max_cov:.1f}x / {target_coverage}x)"
+                        logger.info(msg_text)
+                        self.send_slack_notification(
+                            "coverage_100", 
+                            msg_text,
+                            pos_name=pos_name,
+                            extra_fields=[
+                                ("Progress", progress),
+                                ("Max Sample Coverage", f"🎯 *{max_cov:.1f}x* / {target_coverage}x"),
+                            ]
+                        )
                         
-                if max_cov >= (target_coverage * 0.5) and not alerted_50:
-                    alerted_50 = True
-                    progress = make_progress_bar(max_cov, target_coverage)
-                    msg_text = f"[{self.host_name}:{pos_name}] 🚀 First non-control sample reached 50% target ({max_cov:.1f}x / {target_coverage}x)"
-                    logger.info(msg_text)
-                    self.send_slack_notification(
-                        "coverage_50", 
-                        msg_text,
-                        pos_name=pos_name,
-                        extra_fields=[
-                            ("Progress", progress),
-                            ("Max Sample Coverage", f"📈 *{max_cov:.1f}x* / {target_coverage}x"),
-                        ]
-                    )
-                    
-                if max_cov >= target_coverage and not alerted_100:
-                    alerted_100 = True
-                    progress = make_progress_bar(max_cov, target_coverage)
-                    msg_text = f"[{self.host_name}:{pos_name}] 🎉 First non-control sample reached 100% target ({max_cov:.1f}x / {target_coverage}x)"
-                    logger.info(msg_text)
-                    self.send_slack_notification(
-                        "coverage_100", 
-                        msg_text,
-                        pos_name=pos_name,
-                        extra_fields=[
-                            ("Progress", progress),
-                            ("Max Sample Coverage", f"🎯 *{max_cov:.1f}x* / {target_coverage}x"),
-                        ]
-                    )
-                    
-                now = time.time()
-                if now - last_hourly_alert >= 3600:
-                    last_hourly_alert = now
-                    progress = make_progress_bar(max_cov, target_coverage)
-                    msg_text = f"[{self.host_name}:{pos_name}] ⏱️ Hourly update: Max sample coverage is {max_cov:.1f}x (Target: {target_coverage}x)"
-                    logger.info(msg_text)
-                    self.send_slack_notification(
-                        "coverage_hourly", 
-                        msg_text,
-                        pos_name=pos_name,
-                        extra_fields=[
-                            ("Progress", progress),
-                            ("Max Sample Coverage", f"📈 *{max_cov:.1f}x* / {target_coverage}x"),
-                        ]
-                    )
-                    
+                    now = time.time()
+                    if now - last_hourly_alert >= 3600:
+                        last_hourly_alert = now
+                        progress = make_progress_bar(max_cov, target_coverage)
+                        msg_text = f"[{self.host_name}:{pos_name}] ⏱️ Hourly update: Max sample coverage is {max_cov:.1f}x (Target: {target_coverage}x)"
+                        logger.info(msg_text)
+                        self.send_slack_notification(
+                            "coverage_hourly", 
+                            msg_text,
+                            pos_name=pos_name,
+                            extra_fields=[
+                                ("Progress", progress),
+                                ("Max Sample Coverage", f"📈 *{max_cov:.1f}x* / {target_coverage}x"),
+                            ]
+                        )
+                        
+            except FileNotFoundError as e:
+                logger.info(f"[{self.host_name}:{pos_name}] Coverage check waiting for run files: {e}")
             except Exception as e:
-                logger.debug(f"[{self.host_name}:{pos_name}] Coverage auto-discovery not ready or failed: {e}")
+                logger.warning(f"[{self.host_name}:{pos_name}] Coverage check encountered an issue: {e}")
+
+            # Wait 5 minutes (300s) between checks, checking stop_event every second
+            for _ in range(300):
+                if stop_event.is_set():
+                    break
+                time.sleep(1)
 
     def _start_coverage_watcher(self, pos_name: str, path: str):
         self._stop_coverage_watcher(pos_name)
