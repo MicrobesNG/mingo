@@ -93,11 +93,28 @@ def find_coverage_inputs(run_dir, quick=False):
             
         # Fallback to MinKNOW reads_tmp directory if active
         if not summaries:
+            candidate_dirs = []
             reads_tmp_dir = get_minknow_reads_tmp_dir()
             if reads_tmp_dir and os.path.exists(reads_tmp_dir):
-                summaries = glob.glob(os.path.join(reads_tmp_dir, '*', cwd_name, '**', 'sequencing_summary*.txt.tmp'), recursive=True)
+                candidate_dirs.append(reads_tmp_dir)
+            
+            # Common ONT locations as fallback
+            for default_dir in ['/var/lib/minknow/data/reads/tmp', '/data/reads/tmp']:
+                if os.path.exists(default_dir) and default_dir not in candidate_dirs:
+                    candidate_dirs.append(default_dir)
+                    
+            for tmp_dir in candidate_dirs:
+                # Search for protocol run id (cwd_name) recursively inside tmp dir
+                summaries = glob.glob(os.path.join(tmp_dir, '**', cwd_name, '**', 'sequencing_summary*.txt.tmp'), recursive=True)
                 if not summaries:
-                    summaries = glob.glob(os.path.join(reads_tmp_dir, '*', cwd_name, 'sequencing_summary*.txt.tmp'))
+                    summaries = glob.glob(os.path.join(tmp_dir, cwd_name, '**', 'sequencing_summary*.txt.tmp'), recursive=True)
+                if not summaries:
+                    summaries = glob.glob(os.path.join(tmp_dir, cwd_name, 'sequencing_summary*.txt.tmp'))
+                if not summaries:
+                    summaries = glob.glob(os.path.join(tmp_dir, '**', cwd_name, 'sequencing_summary*.txt.tmp'), recursive=True)
+                if summaries:
+                    logger.debug(f"Discovered active sequencing summary in tmp directory: '{summaries[0]}'")
+                    break
 
     # 3. Report JSON directly in run_dir
     reports = glob.glob(os.path.join(abs_run_dir, 'report*.json'))

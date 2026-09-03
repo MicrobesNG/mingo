@@ -48,12 +48,24 @@ class BatchFileHandler(FileSystemEventHandler):
         self.pos_name = pos_name
         self.log_callback = log_callback
         
+    def _check_and_log(self, file_path):
+        filename = os.path.basename(file_path)
+        name_lower = filename.lower()
+        if (name_lower.endswith(".fastq.gz") or 
+            name_lower.endswith(".fq.gz") or 
+            name_lower.endswith(".fastq") or 
+            name_lower.endswith(".fq") or 
+            name_lower.endswith(".pod5") or 
+            name_lower.endswith(".fast5")):
+            self.log_callback(self.pos_name, filename)
+
     def on_created(self, event):
         if not event.is_directory:
-            ext = os.path.splitext(event.src_path)[1].lower()
-            if ext in [".fastq", ".gz", ".pod5"]:
-                filename = os.path.basename(event.src_path)
-                self.log_callback(self.pos_name, filename)
+            self._check_and_log(event.src_path)
+
+    def on_moved(self, event):
+        if not event.is_directory:
+            self._check_and_log(event.dest_path)
 
 ERROR_STATES = {
     protocol_pb2.PROTOCOL_FINISHED_WITH_ERROR: "Error",
