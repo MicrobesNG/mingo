@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 from mingo.watch import MinKNOWWatcher, resolve_display_hostname, is_remote_host
@@ -119,6 +120,27 @@ class TestWatch(unittest.TestCase):
         bar_100 = make_progress_bar(55.0, 55.0, length=10)
         self.assertIn("100.0%", bar_100)
         self.assertIn("▰▰▰▰▰▰▰▰▰▰", bar_100)
+
+    def test_resolve_run_dirs_and_coverage_inputs(self):
+        from mingo.coverage import resolve_run_dirs, find_coverage_inputs, run_coverage_analysis
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        exp_dir = os.path.join(project_root, 'NSR_test')
+        
+        # Test resolving from experiment_dir
+        run_dirs = resolve_run_dirs(exp_dir)
+        self.assertEqual(len(run_dirs), 1)
+        leaf_dir = run_dirs[0]
+        self.assertTrue(leaf_dir.endswith("20260220_1403_P2S-01064-B_PBI35250_84b0eb00"))
+
+        # Test resolving from leaf run_dir
+        self.assertEqual(resolve_run_dirs(leaf_dir), [leaf_dir])
+
+        # Test discovery and analysis
+        csv_path, summary_path, json_path = find_coverage_inputs(leaf_dir)
+        self.assertTrue(os.path.exists(csv_path))
+        results = run_coverage_analysis(csv_path, json_path=json_path, quiet=True)
+        self.assertEqual(len(results), 63)
+        self.assertIn('coverage_float', results[0])
 
 if __name__ == '__main__':
     unittest.main()

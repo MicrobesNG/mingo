@@ -9,7 +9,7 @@ from slack_sdk.webhook import WebhookClient
 from minknow_api import protocol_pb2
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from .coverage import run_coverage_analysis, find_coverage_inputs
+from .coverage import run_coverage_analysis, find_coverage_inputs, resolve_run_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,12 @@ class MinKNOWWatcher:
 
         while not stop_event.is_set():
             try:
-                csv_path, summary_path, json_path = find_coverage_inputs(output_path, quick=False)
+                run_dirs = resolve_run_dirs(output_path)
+                if not run_dirs:
+                    raise FileNotFoundError(f"No run directories found in '{output_path}'")
+                
+                target_run_dir = run_dirs[-1]
+                csv_path, summary_path, json_path = find_coverage_inputs(target_run_dir, quick=False)
                 if not summary_path and not json_path:
                     logger.info(f"[{self.host_name}:{pos_name}] Coverage check: Sample sheet found ({os.path.basename(csv_path)}), waiting for summary or report...")
                 else:

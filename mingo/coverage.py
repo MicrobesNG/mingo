@@ -27,59 +27,86 @@ def get_minknow_reads_tmp_dir():
         logger.warning(f"Failed to parse MinKNOW conf for tmp directory: {e}")
         return None
 
+def resolve_run_dirs(path: str) -> list:
+    """
+    Given a path that may be a leaf run directory or an experiment directory,
+    resolves and returns a list of leaf run directories matching:
+    <experiment_dir>/<sample_id>/<run_id>/
+    """
+    abs_path = os.path.abspath(path)
+    if not os.path.exists(abs_path):
+        return []
+
+    # If the path itself contains sample_sheet, summary, or report, it is already a leaf run directory
+    if (glob.glob(os.path.join(abs_path, 'sample_sheet*.csv')) or
+        glob.glob(os.path.join(abs_path, 'sequencing_summary*.txt*')) or
+        glob.glob(os.path.join(abs_path, 'report*.json'))):
+        return [abs_path]
+
+    # Otherwise traverse the MinKNOW hierarchy: <experiment_dir>/<sample_id>/<run_id>/
+    leaves = []
+    for sample_entry in sorted(os.listdir(abs_path)):
+        sample_path = os.path.join(abs_path, sample_entry)
+        if not os.path.isdir(sample_path):
+            continue
+            
+        for run_entry in sorted(os.listdir(sample_path)):
+            run_path = os.path.join(sample_path, run_entry)
+            if not os.path.isdir(run_path):
+                continue
+                
+            # Check if this leaf directory contains ONT run files
+            if (glob.glob(os.path.join(run_path, 'sample_sheet*.csv')) or
+                glob.glob(os.path.join(run_path, 'sequencing_summary*.txt*')) or
+                glob.glob(os.path.join(run_path, 'report*.json'))):
+                leaves.append(run_path)
+
+    return leaves
+
 def find_coverage_inputs(run_dir, quick=False):
     """
-    Auto-discovers the sample sheet, sequencing summary (or tmp), and report JSON from a run directory.
+    Finds sample sheet, sequencing summary (or .tmp), and report JSON directly inside a leaf run directory.
     Returns: (csv_path, summary_path, json_path)
     """
     abs_run_dir = os.path.abspath(run_dir)
     cwd_name = os.path.basename(abs_run_dir)
     
-    sample_sheet_pattern = os.path.join(run_dir, 'no_sample_id', '*', 'sample_sheet*.csv')
-    logger.info(f"Searching for sample sheet with pattern: '{sample_sheet_pattern}' (abs_dir: '{abs_run_dir}')")
-    sample_sheets = glob.glob(sample_sheet_pattern)
+    # 1. Sample sheet directly in run_dir
+    sample_sheets = glob.glob(os.path.join(abs_run_dir, 'sample_sheet*.csv'))
     if not sample_sheets:
-        raise FileNotFoundError(f"No sample sheet found via '{sample_sheet_pattern}' (resolved dir: '{abs_run_dir}')")
+        raise FileNotFoundError(f"No sample sheet found in leaf run directory '{abs_run_dir}'")
     elif len(sample_sheets) > 1:
-        raise ValueError(f"Multiple sample sheets found in '{sample_sheet_pattern}': {sample_sheets}")
+        logger.warning(f"Multiple sample sheets found in '{abs_run_dir}', using first: {sample_sheets[0]}")
         
     csv_path = sample_sheets[0]
-    logger.info(f"Discovered sample sheet: '{csv_path}'")
-    sheet_dir = os.path.dirname(csv_path)
+    logger.debug(f"Found sample sheet: '{csv_path}'")
     
-    summary_pattern = os.path.join(run_dir, 'no_sample_id', '*', 'sequencing_summary*.txt')
-    summaries = glob.glob(summary_pattern)
-    if not summaries:
-        reads_tmp_dir = get_minknow_reads_tmp_dir()
-        if reads_tmp_dir:
-            tmp_pattern = os.path.join(reads_tmp_dir, '*', cwd_name, 'no_sample_id', '*', 'sequencing_summary*.txt.tmp')
-            logger.info(f"Searching for live summary in tmp dir with pattern: '{tmp_pattern}'")
-            summaries = glob.glob(tmp_pattern)
-        else:
-            local_tmp_pattern = os.path.join(run_dir, 'no_sample_id', '*', 'sequencing_summary*.txt.tmp')
-            logger.info(f"Searching for live summary with pattern: '{local_tmp_pattern}'")
-            summaries = glob.glob(local_tmp_pattern)
+    # 2. Sequencing summary directly in run_dir (or reads_tmp_dir fallback)
+    summaries = []
+    if not quick:
+        summaries = glob.glob(os.path.join(abs_run_dir, 'sequencing_summary*.txt'))
+        summaries = [s for s in summaries if not s.endswith('.tmp')]
+        
+        # If no completed summary, search for active .txt.tmp in run_dir
+        if not summaries:
+            summaries = glob.glob(os.path.join(abs_run_dir, 'sequencing_summary*.txt.tmp'))
             
-    reports = glob.glob(os.path.join(run_dir, 'no_sample_id', '*', 'report*.json'))
+        # Fallback to MinKNOW reads_tmp directory if active
+        if not summaries:
+            reads_tmp_dir = get_minknow_reads_tmp_dir()
+            if reads_tmp_dir and os.path.exists(reads_tmp_dir):
+                summaries = glob.glob(os.path.join(reads_tmp_dir, '*', cwd_name, '**', 'sequencing_summary*.txt.tmp'), recursive=True)
+                if not summaries:
+                    summaries = glob.glob(os.path.join(reads_tmp_dir, '*', cwd_name, 'sequencing_summary*.txt.tmp'))
+
+    # 3. Report JSON directly in run_dir
+    reports = glob.glob(os.path.join(abs_run_dir, 'report*.json'))
     
-    summary_path = None
-    json_path = None
-    if summaries and not quick:
-        if len(summaries) > 1:
-            raise ValueError("Multiple sequencing summaries found.")
-        summary_path = summaries[0]
-        # Verify suffix match
-        rel_sheet = os.path.relpath(sheet_dir, run_dir)
-        if not os.path.dirname(summary_path).endswith(rel_sheet):
-            raise ValueError(f"Sample sheet and summary are in mismatched subdirectories. Summary: {summary_path}")
-    else:
-        if not reports:
-            raise FileNotFoundError("No JSON report found (and no sequencing summary found or --quick specified).")
-        elif len(reports) > 1:
-            raise ValueError("Multiple JSON reports found.")
-        json_path = reports[0]
-        if sheet_dir != os.path.dirname(json_path):
-            raise ValueError(f"Sample sheet and report are in different subdirectories.")
+    summary_path = summaries[0] if summaries else None
+    json_path = reports[0] if reports else None
+
+    if not summary_path and not json_path:
+        raise FileNotFoundError(f"Neither sequencing summary nor report JSON found in leaf run directory '{abs_run_dir}'")
             
     return csv_path, summary_path, json_path
 
@@ -92,26 +119,28 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             reader = csv.DictReader(f)
             for row in reader:
                 barcode = row['barcode']
-                # Determine boolean value for low material, defaulting to False if missing or malformed
                 low_mat_val = str(row.get('cntn_cf_lowMaterial', '')).strip().lower() == 'true'
                 
+                try:
+                    genome_size_mb = float(row.get('cntn_cf_genomeSizeMb') or 0.0)
+                except (ValueError, TypeError):
+                    genome_size_mb = 0.0
+
                 samples[barcode] = {
-                    'alias': row['alias'],
+                    'alias': row.get('alias', ''),
                     'type': row.get('type', 'test_sample'),
-                    'genome_size_mb': float(row['cntn_cf_genomeSizeMb']) if row['cntn_cf_genomeSizeMb'] else 0,
-                    'experiment_id': row['experiment_id'],
+                    'genome_size_mb': genome_size_mb,
+                    'experiment_id': row.get('experiment_id', ''),
                     'low_material': low_mat_val
                 }
                 if csv_exp_id is None:
-                    csv_exp_id = row['experiment_id']
-                elif csv_exp_id != row['experiment_id']:
-                    print(f"Warning: Multiple experiment IDs found in CSV: {csv_exp_id}, {row['experiment_id']}")
+                    csv_exp_id = row.get('experiment_id')
+                elif csv_exp_id != row.get('experiment_id') and not quiet:
+                    print(f"Warning: Multiple experiment IDs found in CSV: {csv_exp_id}, {row.get('experiment_id')}")
     except Exception as e:
-        print(f"Error reading CSV: {e}")
-        sys.exit(1)
+        raise RuntimeError(f"Error reading CSV {csv_path}: {e}")
 
     yields = {} # Stores base counts and read distribution
-    # Structure: { barcode: {'bases': 0, 'reads': 0, 'short_bases': 0, 'short_reads': 0, 'long_bases': 0, 'long_reads': 0} }
 
     # 2. Parse Reports
     max_start_time = 0.0
@@ -121,21 +150,23 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 reader = csv.DictReader(f, delimiter='\t')
                 for row in reader:
                     barcode = row.get('barcode_arrangement')
-                    if not barcode: continue
+                    if not barcode:
+                        continue
                     
                     try:
                         start_time = float(row.get('start_time', 0))
                         if start_time > max_start_time:
                             max_start_time = start_time
-                    except ValueError:
+                    except (ValueError, TypeError):
                         pass
 
-                    if row.get('passes_filtering') != 'TRUE':
+                    passed_raw = row.get('passes_filtering')
+                    if passed_raw is not None and str(passed_raw).strip().upper() not in ['TRUE', '1', 'T']:
                         continue
                     
                     try:
                         length = int(row.get('sequence_length_template', 0))
-                    except ValueError:
+                    except (ValueError, TypeError):
                         length = 0
 
                     if barcode not in yields:
@@ -151,8 +182,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                         yields[barcode]['long_bases'] += length
                         yields[barcode]['long_reads'] += 1
         except Exception as e:
-            print(f"Error reading summary: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Error reading summary {summary_path}: {e}")
 
     elif json_path:
         try:
@@ -160,15 +190,15 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 data = json.load(f)
             
             json_exp_id = data.get('protocol_run_info', {}).get('user_info', {}).get('protocol_group_id')
-            if csv_exp_id and json_exp_id and csv_exp_id != json_exp_id:
-                print(f"Error: Run mismatch. CSV experiment_id ({csv_exp_id}) != JSON protocol_group_id ({json_exp_id})")
-                sys.exit(1)
+            if csv_exp_id and json_exp_id and csv_exp_id != json_exp_id and not quiet:
+                print(f"Warning: Run mismatch. CSV experiment_id ({csv_exp_id}) != JSON protocol_group_id ({json_exp_id})")
 
             for acq in data.get('acquisitions', []):
                 for out in acq.get('acquisition_output', []):
                     if out.get('type') == 'SplitByBarcode':
                         plot_data = out.get('plot', [])
-                        if not plot_data: continue
+                        if not plot_data:
+                            continue
                         
                         barcode_plot_snapshots = plot_data[0].get('snapshots', [])
                         for barcode_entry in barcode_plot_snapshots:
@@ -177,7 +207,8 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                                 if 'barcode_name' in filt:
                                     barcode_name = filt['barcode_name']
                                     break
-                            if not barcode_name: continue
+                            if not barcode_name:
+                                continue
                             
                             snaps = barcode_entry.get('snapshots', [])
                             if snaps:
@@ -191,11 +222,9 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                                 yields[barcode_name]['bases'] += bases
                                 yields[barcode_name]['reads'] += reads
         except Exception as e:
-            print(f"Error reading JSON: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Error reading JSON {json_path}: {e}")
     else:
-        print("Error: Either --json or --summary must be provided.")
-        sys.exit(1)
+        raise ValueError("Either json_path or summary_path must be provided.")
 
     # 3. Calculate and Output
     show_eta = bool(summary_path and filter_below_coverage is not None)
