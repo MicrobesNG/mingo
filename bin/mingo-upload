@@ -138,12 +138,24 @@ def main():
     if error_occurred:
         message = f"ONT upload for run {run_name} completed with errors. See logs."
         logger.error(message)
-        uploader.send_slack_notification(message)
+        uploader.send_slack_notification(
+            message,
+            run_name=run_name,
+            success=False,
+            fastq_count=len(fastq_manifest_data),
+            pod5_count=len(pod5_manifest_data)
+        )
         sys.exit(1)
     else:
         message = f"ONT upload for run {run_name} completed successfully."
         logger.info(message)
-        uploader.send_slack_notification(message)
+        uploader.send_slack_notification(
+            message,
+            run_name=run_name,
+            success=True,
+            fastq_count=len(fastq_manifest_data),
+            pod5_count=len(pod5_manifest_data)
+        )
 
 if __name__ == "__main__":
     main()

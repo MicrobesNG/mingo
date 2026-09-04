@@ -2,8 +2,205 @@ import json
 import csv
 import sys
 import os
+import glob
+import logging
+import statistics
 
-def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_below_coverage=None, output_csv=False, bin_threshold=7000, no_low_material=False):
+logger = logging.getLogger(__name__)
+
+def get_minknow_reads_tmp_dir():
+    conf_path = '/opt/ont/minknow/conf/user_conf'
+    if not os.path.exists(conf_path):
+        return None
+    try:
+        with open(conf_path, 'r') as f:
+            data = json.load(f)
+        
+        output_dirs = data.get('user', {}).get('output_dirs', {})
+        base_dir = output_dirs.get('base', {}).get('value0', '/var/lib/minknow/data')
+        reads_tmp = output_dirs.get('reads_tmp', {}).get('value0', 'reads/tmp')
+        
+        if os.path.isabs(reads_tmp):
+            return reads_tmp
+        else:
+            return os.path.join(base_dir, reads_tmp)
+    except Exception as e:
+        logger.warning(f"Failed to parse MinKNOW conf for tmp directory: {e}")
+        return None
+
+def resolve_run_dirs(path: str) -> list:
+    """
+    Given a path that may be a leaf run directory or an experiment directory,
+    resolves and returns a list of leaf run directories matching:
+    <experiment_dir>/<sample_id>/<run_id>/
+    """
+    abs_path = os.path.abspath(path)
+    if not os.path.exists(abs_path):
+        return []
+
+    # If the path itself contains sample_sheet, summary, or report, it is already a leaf run directory
+    if (glob.glob(os.path.join(abs_path, 'sample_sheet*.csv')) or
+        glob.glob(os.path.join(abs_path, 'sequencing_summary*.txt*')) or
+        glob.glob(os.path.join(abs_path, 'report*.json'))):
+        return [abs_path]
+
+    # Otherwise traverse the MinKNOW hierarchy: <experiment_dir>/<sample_id>/<run_id>/
+    leaves = []
+    for sample_entry in sorted(os.listdir(abs_path)):
+        sample_path = os.path.join(abs_path, sample_entry)
+        if not os.path.isdir(sample_path):
+            continue
+            
+        for run_entry in sorted(os.listdir(sample_path)):
+            run_path = os.path.join(sample_path, run_entry)
+            if not os.path.isdir(run_path):
+                continue
+                
+            # Check if this leaf directory contains ONT run files
+            if (glob.glob(os.path.join(run_path, 'sample_sheet*.csv')) or
+                glob.glob(os.path.join(run_path, 'sequencing_summary*.txt*')) or
+                glob.glob(os.path.join(run_path, 'report*.json'))):
+                leaves.append(run_path)
+
+    return leaves
+
+def find_coverage_inputs(run_dir, quick=False):
+    """
+    Finds sample sheet, sequencing summary (or .tmp), and report JSON directly inside a leaf run directory.
+    Returns: (csv_path, summary_path, json_path)
+    """
+    abs_run_dir = os.path.abspath(run_dir)
+    cwd_name = os.path.basename(abs_run_dir)
+    
+    # 1. Sample sheet directly in run_dir
+    sample_sheets = glob.glob(os.path.join(abs_run_dir, 'sample_sheet*.csv'))
+    if not sample_sheets:
+        raise FileNotFoundError(f"No sample sheet found in leaf run directory '{abs_run_dir}'")
+    elif len(sample_sheets) > 1:
+        logger.warning(f"Multiple sample sheets found in '{abs_run_dir}', using first: {sample_sheets[0]}")
+        
+    csv_path = sample_sheets[0]
+    logger.debug(f"Found sample sheet: '{csv_path}'")
+    
+    # 2. Sequencing summary directly in run_dir (or reads_tmp_dir fallback)
+    summaries = []
+    if not quick:
+        summaries = glob.glob(os.path.join(abs_run_dir, 'sequencing_summary*.txt'))
+        summaries = [s for s in summaries if not s.endswith('.tmp')]
+        
+        # If no completed summary, search for active .txt.tmp in run_dir
+        if not summaries:
+            summaries = glob.glob(os.path.join(abs_run_dir, 'sequencing_summary*.txt.tmp'))
+            
+        # Fallback to MinKNOW reads_tmp directory if active
+        if not summaries:
+            candidate_dirs = []
+            reads_tmp_dir = get_minknow_reads_tmp_dir()
+            if reads_tmp_dir and os.path.exists(reads_tmp_dir):
+                candidate_dirs.append(reads_tmp_dir)
+            
+            # Common ONT locations as fallback
+            for default_dir in ['/var/lib/minknow/data/reads/tmp', '/data/reads/tmp']:
+                if os.path.exists(default_dir) and default_dir not in candidate_dirs:
+                    candidate_dirs.append(default_dir)
+                    
+            for tmp_dir in candidate_dirs:
+                # Search for protocol run id (cwd_name) recursively inside tmp dir
+                summaries = glob.glob(os.path.join(tmp_dir, '**', cwd_name, '**', 'sequencing_summary*.txt.tmp'), recursive=True)
+                if not summaries:
+                    summaries = glob.glob(os.path.join(tmp_dir, cwd_name, '**', 'sequencing_summary*.txt.tmp'), recursive=True)
+                if not summaries:
+                    summaries = glob.glob(os.path.join(tmp_dir, cwd_name, 'sequencing_summary*.txt.tmp'))
+                if not summaries:
+                    summaries = glob.glob(os.path.join(tmp_dir, '**', cwd_name, 'sequencing_summary*.txt.tmp'), recursive=True)
+                if summaries:
+                    logger.debug(f"Discovered active sequencing summary in tmp directory: '{summaries[0]}'")
+                    break
+
+    # 3. Report JSON directly in run_dir
+    reports = glob.glob(os.path.join(abs_run_dir, 'report*.json'))
+    
+    summary_path = summaries[0] if summaries else None
+    json_path = reports[0] if reports else None
+
+    if not summary_path and not json_path:
+        raise FileNotFoundError(f"Neither sequencing summary nor report JSON found in leaf run directory '{abs_run_dir}'")
+            
+    return csv_path, summary_path, json_path
+
+def compute_cohort_stats(results: list, exclude_low_material: bool = False) -> dict:
+    """
+    Computes cohort-level summary statistics across non-control samples.
+    """
+    viable = []
+    for r in results:
+        if r.get('type') == 'negative_control':
+            continue
+        if exclude_low_material and r.get('low_mat') == 'Y':
+            continue
+        viable.append(r)
+
+    if not viable:
+        return {
+            'total_viable': 0,
+            'met_count': 0,
+            'close_count': 0,
+            'lagging_count': 0,
+            'pct_met': 0.0,
+            'median_pct': 0.0,
+            'median_cov': 0.0,
+            'median_target': 0.0,
+            'leading_sample': None,
+            'lagging_samples': []
+        }
+
+    met = []
+    close = []
+    lagging = []
+    pcts = []
+    covs = []
+    targets = []
+    leading = None
+    max_pct = -1.0
+
+    for r in viable:
+        cov = float(r.get('coverage_float', 0.0))
+        target = float(r.get('target_coverage_float', 55.0))
+        pct = (cov / target) if target > 0 else 0.0
+        pcts.append(pct * 100)
+        covs.append(cov)
+        targets.append(target)
+
+        if pct >= 1.0:
+            met.append(r)
+        elif pct >= 0.8:
+            close.append(r)
+        elif pct < 0.5:
+            lagging.append(r)
+
+        if pct > max_pct:
+            max_pct = pct
+            leading = r
+
+    median_pct = statistics.median(pcts) if pcts else 0.0
+    median_cov = statistics.median(covs) if covs else 0.0
+    median_target = statistics.median(targets) if targets else 0.0
+    pct_met = (len(met) / len(viable)) * 100 if viable else 0.0
+
+    return {
+        'total_viable': len(viable),
+        'met_count': len(met),
+        'close_count': len(close),
+        'lagging_count': len(lagging),
+        'pct_met': pct_met,
+        'median_pct': median_pct,
+        'median_cov': median_cov,
+        'median_target': median_target,
+        'leading_sample': leading,
+        'lagging_samples': lagging
+    }
+
+def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_below_coverage=None, output_csv=False, bin_threshold=7000, no_low_material=False, quiet=False):
     # 1. Parse CSV
     samples = {}
     csv_exp_id = None
@@ -12,25 +209,34 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             reader = csv.DictReader(f)
             for row in reader:
                 barcode = row['barcode']
-                # Determine boolean value for low material, defaulting to False if missing or malformed
                 low_mat_val = str(row.get('cntn_cf_lowMaterial', '')).strip().lower() == 'true'
                 
+                try:
+                    genome_size_mb = float(row.get('cntn_cf_genomeSizeMb') or 0.0)
+                except (ValueError, TypeError):
+                    genome_size_mb = 0.0
+
+                try:
+                    target_cov = float(row.get('target_coverage') or 55.0)
+                except (ValueError, TypeError):
+                    target_cov = 55.0
+
                 samples[barcode] = {
-                    'alias': row['alias'],
-                    'genome_size_mb': float(row['cntn_cf_genomeSizeMb']) if row['cntn_cf_genomeSizeMb'] else 0,
-                    'experiment_id': row['experiment_id'],
-                    'low_material': low_mat_val
+                    'alias': row.get('alias', ''),
+                    'type': row.get('type', 'test_sample'),
+                    'genome_size_mb': genome_size_mb,
+                    'experiment_id': row.get('experiment_id', ''),
+                    'low_material': low_mat_val,
+                    'target_coverage': target_cov
                 }
                 if csv_exp_id is None:
-                    csv_exp_id = row['experiment_id']
-                elif csv_exp_id != row['experiment_id']:
-                    print(f"Warning: Multiple experiment IDs found in CSV: {csv_exp_id}, {row['experiment_id']}")
+                    csv_exp_id = row.get('experiment_id')
+                elif csv_exp_id != row.get('experiment_id') and not quiet:
+                    print(f"Warning: Multiple experiment IDs found in CSV: {csv_exp_id}, {row.get('experiment_id')}")
     except Exception as e:
-        print(f"Error reading CSV: {e}")
-        sys.exit(1)
+        raise RuntimeError(f"Error reading CSV {csv_path}: {e}")
 
     yields = {} # Stores base counts and read distribution
-    # Structure: { barcode: {'bases': 0, 'reads': 0, 'short_bases': 0, 'short_reads': 0, 'long_bases': 0, 'long_reads': 0} }
 
     # 2. Parse Reports
     max_start_time = 0.0
@@ -40,21 +246,23 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 reader = csv.DictReader(f, delimiter='\t')
                 for row in reader:
                     barcode = row.get('barcode_arrangement')
-                    if not barcode: continue
+                    if not barcode:
+                        continue
                     
                     try:
                         start_time = float(row.get('start_time', 0))
                         if start_time > max_start_time:
                             max_start_time = start_time
-                    except ValueError:
+                    except (ValueError, TypeError):
                         pass
 
-                    if row.get('passes_filtering') != 'TRUE':
+                    passed_raw = row.get('passes_filtering')
+                    if passed_raw is not None and str(passed_raw).strip().upper() not in ['TRUE', '1', 'T']:
                         continue
                     
                     try:
                         length = int(row.get('sequence_length_template', 0))
-                    except ValueError:
+                    except (ValueError, TypeError):
                         length = 0
 
                     if barcode not in yields:
@@ -70,8 +278,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                         yields[barcode]['long_bases'] += length
                         yields[barcode]['long_reads'] += 1
         except Exception as e:
-            print(f"Error reading summary: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Error reading summary {summary_path}: {e}")
 
     elif json_path:
         try:
@@ -79,15 +286,15 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 data = json.load(f)
             
             json_exp_id = data.get('protocol_run_info', {}).get('user_info', {}).get('protocol_group_id')
-            if csv_exp_id and json_exp_id and csv_exp_id != json_exp_id:
-                print(f"Error: Run mismatch. CSV experiment_id ({csv_exp_id}) != JSON protocol_group_id ({json_exp_id})")
-                sys.exit(1)
+            if csv_exp_id and json_exp_id and csv_exp_id != json_exp_id and not quiet:
+                print(f"Warning: Run mismatch. CSV experiment_id ({csv_exp_id}) != JSON protocol_group_id ({json_exp_id})")
 
             for acq in data.get('acquisitions', []):
                 for out in acq.get('acquisition_output', []):
                     if out.get('type') == 'SplitByBarcode':
                         plot_data = out.get('plot', [])
-                        if not plot_data: continue
+                        if not plot_data:
+                            continue
                         
                         barcode_plot_snapshots = plot_data[0].get('snapshots', [])
                         for barcode_entry in barcode_plot_snapshots:
@@ -96,7 +303,8 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                                 if 'barcode_name' in filt:
                                     barcode_name = filt['barcode_name']
                                     break
-                            if not barcode_name: continue
+                            if not barcode_name:
+                                continue
                             
                             snaps = barcode_entry.get('snapshots', [])
                             if snaps:
@@ -110,16 +318,14 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                                 yields[barcode_name]['bases'] += bases
                                 yields[barcode_name]['reads'] += reads
         except Exception as e:
-            print(f"Error reading JSON: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Error reading JSON {json_path}: {e}")
     else:
-        print("Error: Either --json or --summary must be provided.")
-        sys.exit(1)
+        raise ValueError("Either json_path or summary_path must be provided.")
 
     # 3. Calculate and Output
     show_eta = bool(summary_path and filter_below_coverage is not None)
     
-    cols = ['alias', 'barcode', 'low_mat', 'total_mb', 'genome_mb', 'coverage']
+    cols = ['alias', 'barcode', 'low_mat', 'total_mb', 'genome_mb', 'coverage', 'target_cov']
     if show_eta:
         cols.append('eta')
         
@@ -127,28 +333,32 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
         cols += ['avg_len', 'short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len']
 
     thresh_kb = f"{bin_threshold/1000:g}kb"
-    if output_csv:
-        writer = csv.writer(sys.stdout)
-        csv_cols = [c if c not in ['short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len'] else 
-                    c.replace('short', f'<{thresh_kb}').replace('long', f'>={thresh_kb}') for c in cols]
-        writer.writerow(csv_cols)
-    else:
-        header_map = {
-            'alias': f"{'alias':<15}",
-            'barcode': f"{'barcode':<12}",
-            'low_mat': f"{'low_mat':<8}",
-            'total_mb': f"{'yield (Mb)':>10}",
-            'genome_mb': f"{'genome (Mb)':>12}",
-            'coverage': f"{'cov':>6}",
-            'eta': f"{'eta':>11}",
-            'avg_len': f"{'avg_len':>8}",
-            'short_total_mb': f"{f'<{thresh_kb} yield':>12}",
-            'short_avg_len': f"{f'<{thresh_kb} avg':>10}",
-            'long_total_mb': f"{f'>={thresh_kb} yield':>12}",
-            'long_avg_len': f"{f'>={thresh_kb} avg':>10}"
-        }
-        print(" ".join([header_map[c] for c in cols]))
-        print("-" * (128 if summary_path else 68))
+    if not quiet:
+        if output_csv:
+            writer = csv.writer(sys.stdout)
+            csv_cols = [c if c not in ['short_total_mb', 'short_avg_len', 'long_total_mb', 'long_avg_len'] else 
+                        c.replace('short', f'<{thresh_kb}').replace('long', f'>={thresh_kb}') for c in cols]
+            writer.writerow(csv_cols)
+        else:
+            header_map = {
+                'alias': f"{'alias':<15}",
+                'barcode': f"{'barcode':<12}",
+                'low_mat': f"{'low_mat':<8}",
+                'total_mb': f"{'yield (Mb)':>10}",
+                'genome_mb': f"{'genome (Mb)':>12}",
+                'coverage': f"{'cov':>6}",
+                'target_cov': f"{'target':>7}",
+                'eta': f"{'eta':>11}",
+                'avg_len': f"{'avg_len':>8}",
+                'short_total_mb': f"{f'<{thresh_kb} yield':>12}",
+                'short_avg_len': f"{f'<{thresh_kb} avg':>10}",
+                'long_total_mb': f"{f'>={thresh_kb} yield':>12}",
+                'long_avg_len': f"{f'>={thresh_kb} avg':>10}"
+            }
+            print(" ".join([header_map[c] for c in cols]))
+            print("-" * (136 if summary_path else 76))
+    
+    results_out = []
     
     for barcode, info in sorted(samples.items()):
         # Low material filter
@@ -160,17 +370,20 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
         total_mb = y['bases'] / 1_000_000
         genome_mb = info['genome_size_mb']
         coverage = total_mb / genome_mb if genome_mb > 0 else 0
+        target_cov = info['target_coverage']
         
+        effective_target = filter_below_coverage if filter_below_coverage is not None else target_cov
+
         if filter_below_coverage is not None and coverage >= filter_below_coverage:
             continue
             
         eta_str = ""
         if show_eta:
-            target_mb = filter_below_coverage * genome_mb
+            target_mb = effective_target * genome_mb
             remaining_mb = target_mb - total_mb
             if max_start_time > 0 and total_mb > 0:
                 rate_mb_per_sec = total_mb / max_start_time
-                eta_secs = remaining_mb / rate_mb_per_sec
+                eta_secs = remaining_mb / rate_mb_per_sec if remaining_mb > 0 else 0
                 eta_hrs, eta_rem = divmod(eta_secs, 3600)
                 eta_mins = eta_rem // 60
                 eta_str = f"{int(eta_hrs)}h {int(eta_mins)}m"
@@ -179,11 +392,17 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 
         row_data = {
             'alias': info['alias'][:12] + "..." if len(info['alias']) > 14 else info['alias'],
+            'full_alias': info['alias'],
+            'type': info['type'],
             'barcode': barcode,
+            'experiment_id': info.get('experiment_id', ''),
             'low_mat': "Y" if info['low_material'] else " ",
             'total_mb': f"{total_mb:.2f}",
             'genome_mb': f"{genome_mb:.2f}",
             'coverage': f"{coverage:.1f}",
+            'coverage_float': float(coverage),
+            'target_cov': f"{target_cov:.1f}",
+            'target_coverage_float': float(target_cov),
             'eta': eta_str,
             'avg_len': f"{int(y['bases']/y['reads'])}" if y['reads'] > 0 else "0",
             'short_total_mb': f"{y['short_bases']/1_000_000:.2f}",
@@ -191,22 +410,42 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             'long_total_mb': f"{y['long_bases']/1_000_000:.2f}",
             'long_avg_len': f"{int(y['long_bases']/y['long_reads'])}" if y['long_reads'] > 0 else "0"
         }
+        
+        results_out.append(row_data)
 
-        if output_csv:
-            writer.writerow([row_data[c] for c in cols])
-        else:
-            fmt_map = {
-                'alias': f"{row_data['alias']:<15}",
-                'barcode': f"{row_data['barcode']:<12}",
-                'low_mat': f"{row_data['low_mat']:<8}",
-                'total_mb': f"{row_data['total_mb']:>10}",
-                'genome_mb': f"{row_data['genome_mb']:>12}",
-                'coverage': f"{row_data['coverage']:>6}",
-                'eta': f"{row_data['eta']:>11}",
-                'avg_len': f"{row_data['avg_len']:>8}",
-                'short_total_mb': f"{row_data['short_total_mb']:>12}",
-                'short_avg_len': f"{row_data['short_avg_len']:>10}",
-                'long_total_mb': f"{row_data['long_total_mb']:>12}",
-                'long_avg_len': f"{row_data['long_avg_len']:>10}"
-            }
-            print(" ".join([fmt_map[c] for c in cols]))
+        if not quiet:
+            if output_csv:
+                writer.writerow([row_data[c] for c in cols])
+            else:
+                fmt_map = {
+                    'alias': f"{row_data['alias']:<15}",
+                    'barcode': f"{row_data['barcode']:<12}",
+                    'low_mat': f"{row_data['low_mat']:<8}",
+                    'total_mb': f"{row_data['total_mb']:>10}",
+                    'genome_mb': f"{row_data['genome_mb']:>12}",
+                    'coverage': f"{row_data['coverage']:>6}",
+                    'target_cov': f"{row_data['target_cov']:>7}",
+                    'eta': f"{row_data['eta']:>11}",
+                    'avg_len': f"{row_data['avg_len']:>8}",
+                    'short_total_mb': f"{row_data['short_total_mb']:>12}",
+                    'short_avg_len': f"{row_data['short_avg_len']:>10}",
+                    'long_total_mb': f"{row_data['long_total_mb']:>12}",
+                    'long_avg_len': f"{row_data['long_avg_len']:>10}"
+                }
+                print(" ".join([fmt_map[c] for c in cols]))
+
+    if not quiet and not output_csv and results_out:
+        stats = compute_cohort_stats(results_out, exclude_low_material=no_low_material)
+        if stats['total_viable'] > 0:
+            divider_len = 136 if summary_path else 76
+            print("-" * divider_len)
+            lead = stats['leading_sample']
+            lead_str = f"{lead.get('full_alias') or lead.get('alias')} ({lead.get('coverage_float', 0):.1f}x/{lead.get('target_coverage_float', 55):.1f}x)" if lead else "N/A"
+            print(
+                f"Cohort Summary: {stats['met_count']}/{stats['total_viable']} met target ({stats['pct_met']:.1f}%) | "
+                f"Median: {stats['median_cov']:.1f}x/{stats['median_target']:.1f}x ({stats['median_pct']:.1f}%) | "
+                f"Lead: {lead_str} | "
+                f"Lagging (<50%): {stats['lagging_count']}"
+            )
+
+    return results_out

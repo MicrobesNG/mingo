@@ -11,7 +11,7 @@ class SampleSheetGenerator:
             "cntn_cf_fk_barcode_i7", "cntn_id", "cntn_cf_taxon",
             "cntn_cf_genomeSizeMb", "cntn_cf_gcContent", "cntn_cf_orderName",
             "cntn_cf_stockConcentration", "cntn_cf_stockConcentration_unit",
-            "cntn_cf_isUrgent", "cntn_cf_lowMaterial"
+            "cntn_cf_isUrgent", "cntn_cf_lowMaterial", "target_coverage"
         ]
 
     def generate(self, 
@@ -61,6 +61,15 @@ class SampleSheetGenerator:
             else:
                 barcode_name = sample.get('cntn_barCode', '')
 
+            # Determine sample type logic
+            sample_alias = sample.get('cntn_id', '')
+            order_name = sample.get('cntn_cf_orderName', '')
+            sample_type = "test_sample"
+            if sample_alias.startswith("Blank_Strain_"):
+                sample_type = "negative_control"
+            elif order_name.endswith("_controls"):
+                sample_type = "positive_control"
+
             row = {
                 "flow_cell_id": flow_cell_id,
                 "position_id": position_id,
@@ -68,19 +77,20 @@ class SampleSheetGenerator:
                 "experiment_id": experiment_id,
                 "flow_cell_product_code": flow_cell_product_code,
                 "kit": kit,
-                "alias": sample.get('cntn_id', ''), 
-                "type": "test_sample", 
+                "alias": sample_alias, 
+                "type": sample_type, 
                 "barcode": barcode_name,
                 "cntn_cf_fk_barcode_i7": barcode_i7,
-                "cntn_id": sample.get('cntn_id', ''),
+                "cntn_id": sample_alias,
                 "cntn_cf_taxon": sample.get('cntn_cf_taxon', ''),
                 "cntn_cf_genomeSizeMb": sample.get('cntn_cf_genomeSizeMb', ''),
                 "cntn_cf_gcContent": sample.get('cntn_cf_gcContent', ''),
-                "cntn_cf_orderName": sample.get('cntn_cf_orderName', ''),
+                "cntn_cf_orderName": order_name,
                 "cntn_cf_stockConcentration": sample.get('cntn_cf_stockConcentration', ''),
                 "cntn_cf_stockConcentration_unit": sample.get('cntn_cf_stockConcentration_unit', ''),
                 "cntn_cf_isUrgent": str(sample.get('cntn_cf_isUrgent', 'false')).lower(),
                 "cntn_cf_lowMaterial": str(sample.get('cntn_cf_lowMaterial', 'false')).lower(),
+                "target_coverage": "55",
             }
             writer.writerow(row)
 
