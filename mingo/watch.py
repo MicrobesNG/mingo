@@ -9,7 +9,7 @@ from slack_sdk.webhook import WebhookClient
 from minknow_api import protocol_pb2
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from .coverage import run_coverage_analysis, find_coverage_inputs, resolve_run_dirs
+from .coverage import run_coverage_analysis, find_coverage_inputs, resolve_run_dirs, compute_cohort_stats
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +162,10 @@ class MinKNOWWatcher:
                 
     def _coverage_thread_func(self, pos_name: str, output_path: str, stop_event: threading.Event):
         logger.info(f"[{self.host_name}:{pos_name}] Started async coverage monitoring on {output_path}")
-        target_coverage = 55.0
-        alerted_50 = False
-        alerted_100 = False
+        alerted_lead_50 = False
+        alerted_lead_100 = False
+        alerted_cohort_50 = False
+        alerted_cohort_90 = False
         last_hourly_alert = time.time()
         
         # Initial short delay (15s) before first evaluation to let directory settle
@@ -194,70 +195,91 @@ class MinKNOWWatcher:
                         quiet=True
                     )
                     
-                    max_cov = 0.0
-                    evaluated_count = 0
-                    for row in results:
-                        if row.get('type') == 'negative_control':
-                            continue
-                        evaluated_count += 1
-                        try:
-                            cov = float(row.get('coverage_float', 0.0))
-                        except (ValueError, TypeError):
-                            cov = 0.0
-                            
-                        if cov > max_cov:
-                            max_cov = cov
-                            
-                    logger.info(
-                        f"[{self.host_name}:{pos_name}] Coverage check: Max sample coverage is {max_cov:.1f}x / {target_coverage:.1f}x "
-                        f"({evaluated_count} non-control samples evaluated from {input_source})"
-                    )
+                    stats = compute_cohort_stats(results)
+                    total_viable = stats['total_viable']
+                    met_count = stats['met_count']
+                    pct_met = stats['pct_met']
+                    lead = stats['leading_sample']
+                    
+                    if total_viable > 0 and lead is not None:
+                        lead_cov = float(lead.get('coverage_float', 0.0))
+                        lead_target = float(lead.get('target_coverage_float', 55.0))
+                        lead_alias = lead.get('full_alias') or lead.get('alias', 'Unknown')
+                        lead_barcode = lead.get('barcode', '')
+                        lead_pct = (lead_cov / lead_target) if lead_target > 0 else 0.0
 
-                    if max_cov >= (target_coverage * 0.5) and not alerted_50:
-                        alerted_50 = True
-                        progress = make_progress_bar(max_cov, target_coverage)
-                        msg_text = f"[{self.host_name}:{pos_name}] 🚀 First non-control sample reached 50% target ({max_cov:.1f}x / {target_coverage}x)"
-                        logger.info(msg_text)
-                        self.send_slack_notification(
-                            "coverage_50", 
-                            msg_text,
-                            pos_name=pos_name,
-                            extra_fields=[
-                                ("Progress", progress),
-                                ("Max Sample Coverage", f"📈 *{max_cov:.1f}x* / {target_coverage}x"),
-                            ]
+                        logger.info(
+                            f"[{self.host_name}:{pos_name}] Coverage check: Cohort {met_count}/{total_viable} met target ({pct_met:.1f}%), "
+                            f"Median {stats['median_cov']:.1f}x/{stats['median_target']:.1f}x ({stats['median_pct']:.1f}%), "
+                            f"Lead {lead_alias} at {lead_pct * 100:.1f}% ({lead_cov:.1f}x/{lead_target:.1f}x), "
+                            f"Lagging (<50%): {stats['lagging_count']} (evaluated from {input_source})"
                         )
-                        
-                    if max_cov >= target_coverage and not alerted_100:
-                        alerted_100 = True
-                        progress = make_progress_bar(max_cov, target_coverage)
-                        msg_text = f"[{self.host_name}:{pos_name}] 🎉 First non-control sample reached 100% target ({max_cov:.1f}x / {target_coverage}x)"
-                        logger.info(msg_text)
-                        self.send_slack_notification(
-                            "coverage_100", 
-                            msg_text,
-                            pos_name=pos_name,
-                            extra_fields=[
-                                ("Progress", progress),
-                                ("Max Sample Coverage", f"🎯 *{max_cov:.1f}x* / {target_coverage}x"),
-                            ]
-                        )
-                        
-                    now = time.time()
-                    if now - last_hourly_alert >= 3600:
-                        last_hourly_alert = now
-                        progress = make_progress_bar(max_cov, target_coverage)
-                        msg_text = f"[{self.host_name}:{pos_name}] ⏱️ Hourly update: Max sample coverage is {max_cov:.1f}x (Target: {target_coverage}x)"
-                        logger.info(msg_text)
-                        self.send_slack_notification(
-                            "coverage_hourly", 
-                            msg_text,
-                            pos_name=pos_name,
-                            extra_fields=[
-                                ("Progress", progress),
-                                ("Max Sample Coverage", f"📈 *{max_cov:.1f}x* / {target_coverage}x"),
-                            ]
-                        )
+
+                        cohort_progress = make_progress_bar(met_count, total_viable)
+                        lagging_txt = f"⚠️ *{stats['lagging_count']}* sample(s)" if stats['lagging_count'] > 0 else "None"
+
+                        extra_fields = [
+                            ("Cohort Target Met", f"🎯 *{met_count}/{total_viable}* ({pct_met:.1f}%)\n{cohort_progress}"),
+                            ("Cohort Median", f"📊 *{stats['median_cov']:.1f}x* / {stats['median_target']:.1f}x (*{stats['median_pct']:.1f}%*)"),
+                            ("Leading Sample", f"🚀 `{lead_alias}` ({lead_barcode})\n📈 *{lead_cov:.1f}x* / {lead_target:.1f}x (*{lead_pct * 100:.1f}%*)"),
+                            ("Lagging (<50%)", lagging_txt),
+                        ]
+
+                        if lead_pct >= 0.5 and not alerted_lead_50:
+                            alerted_lead_50 = True
+                            msg_text = f"[{self.host_name}:{pos_name}] 🚀 First sample reached 50% target ({lead_alias}: {lead_cov:.1f}x / {lead_target:.1f}x)"
+                            logger.info(msg_text)
+                            self.send_slack_notification(
+                                "coverage_50", 
+                                msg_text,
+                                pos_name=pos_name,
+                                extra_fields=extra_fields
+                            )
+                            
+                        if lead_pct >= 1.0 and not alerted_lead_100:
+                            alerted_lead_100 = True
+                            msg_text = f"[{self.host_name}:{pos_name}] 🎉 First sample reached 100% target ({lead_alias}: {lead_cov:.1f}x / {lead_target:.1f}x)"
+                            logger.info(msg_text)
+                            self.send_slack_notification(
+                                "coverage_100", 
+                                msg_text,
+                                pos_name=pos_name,
+                                extra_fields=extra_fields
+                            )
+
+                        if pct_met >= 50.0 and not alerted_cohort_50:
+                            alerted_cohort_50 = True
+                            msg_text = f"[{self.host_name}:{pos_name}] 📊 Half of cohort reached target ({met_count}/{total_viable} samples met)"
+                            logger.info(msg_text)
+                            self.send_slack_notification(
+                                "cohort_50",
+                                msg_text,
+                                pos_name=pos_name,
+                                extra_fields=extra_fields
+                            )
+
+                        if pct_met >= 90.0 and not alerted_cohort_90:
+                            alerted_cohort_90 = True
+                            msg_text = f"[{self.host_name}:{pos_name}] 🏁 Cohort quorum reached: {met_count}/{total_viable} samples ({pct_met:.1f}%) met target"
+                            logger.info(msg_text)
+                            self.send_slack_notification(
+                                "cohort_quorum",
+                                msg_text,
+                                pos_name=pos_name,
+                                extra_fields=extra_fields
+                            )
+                            
+                        now = time.time()
+                        if now - last_hourly_alert >= 3600:
+                            last_hourly_alert = now
+                            msg_text = f"[{self.host_name}:{pos_name}] ⏱️ Hourly update: {met_count}/{total_viable} samples met target ({pct_met:.1f}%)"
+                            logger.info(msg_text)
+                            self.send_slack_notification(
+                                "coverage_hourly", 
+                                msg_text,
+                                pos_name=pos_name,
+                                extra_fields=extra_fields
+                            )
                         
             except FileNotFoundError as e:
                 logger.info(f"[{self.host_name}:{pos_name}] Coverage check waiting for run files: {e}")
@@ -312,8 +334,10 @@ class MinKNOWWatcher:
             "info_finished": ("#27AE60", "🏁 Routine Run Finished"),
             "error": ("#E01E5A", "❌ Sequencing Run Error"),
             "stopped": ("#ECB22E", "⏹️ Run Stopped by User"),
-            "coverage_50": ("#ECB22E", "🚀 Coverage Milestone (50% Reached)"),
-            "coverage_100": ("#00B894", "🎉 Coverage Target Met (100% Reached)"),
+            "coverage_50": ("#ECB22E", "🚀 Coverage Milestone (First Sample 50%)"),
+            "coverage_100": ("#00B894", "🎉 Coverage Milestone (First Sample 100%)"),
+            "cohort_50": ("#3498DB", "📊 Cohort Milestone (50% Met Target)"),
+            "cohort_quorum": ("#27AE60", "🏁 Cohort Quorum Met (90%+ Met Target)"),
             "coverage_hourly": ("#0984E3", "⏱️ Hourly Coverage Update"),
             "coverage": ("#0984E3", "📊 Coverage Update"),
         }

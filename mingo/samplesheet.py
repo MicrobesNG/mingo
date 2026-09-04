@@ -11,7 +11,7 @@ class SampleSheetGenerator:
             "cntn_cf_fk_barcode_i7", "cntn_id", "cntn_cf_taxon",
             "cntn_cf_genomeSizeMb", "cntn_cf_gcContent", "cntn_cf_orderName",
             "cntn_cf_stockConcentration", "cntn_cf_stockConcentration_unit",
-            "cntn_cf_isUrgent", "cntn_cf_lowMaterial"
+            "cntn_cf_isUrgent", "cntn_cf_lowMaterial", "target_coverage"
         ]
 
     def generate(self, 
@@ -90,6 +90,7 @@ class SampleSheetGenerator:
                 "cntn_cf_stockConcentration_unit": sample.get('cntn_cf_stockConcentration_unit', ''),
                 "cntn_cf_isUrgent": str(sample.get('cntn_cf_isUrgent', 'false')).lower(),
                 "cntn_cf_lowMaterial": str(sample.get('cntn_cf_lowMaterial', 'false')).lower(),
+                "target_coverage": "55",
             }
             writer.writerow(row)
 

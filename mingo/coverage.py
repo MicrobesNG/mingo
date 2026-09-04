@@ -4,6 +4,7 @@ import sys
 import os
 import glob
 import logging
+import statistics
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,78 @@ def find_coverage_inputs(run_dir, quick=False):
             
     return csv_path, summary_path, json_path
 
+def compute_cohort_stats(results: list, exclude_low_material: bool = False) -> dict:
+    """
+    Computes cohort-level summary statistics across non-control samples.
+    """
+    viable = []
+    for r in results:
+        if r.get('type') == 'negative_control':
+            continue
+        if exclude_low_material and r.get('low_mat') == 'Y':
+            continue
+        viable.append(r)
+
+    if not viable:
+        return {
+            'total_viable': 0,
+            'met_count': 0,
+            'close_count': 0,
+            'lagging_count': 0,
+            'pct_met': 0.0,
+            'median_pct': 0.0,
+            'median_cov': 0.0,
+            'median_target': 0.0,
+            'leading_sample': None,
+            'lagging_samples': []
+        }
+
+    met = []
+    close = []
+    lagging = []
+    pcts = []
+    covs = []
+    targets = []
+    leading = None
+    max_pct = -1.0
+
+    for r in viable:
+        cov = float(r.get('coverage_float', 0.0))
+        target = float(r.get('target_coverage_float', 55.0))
+        pct = (cov / target) if target > 0 else 0.0
+        pcts.append(pct * 100)
+        covs.append(cov)
+        targets.append(target)
+
+        if pct >= 1.0:
+            met.append(r)
+        elif pct >= 0.8:
+            close.append(r)
+        elif pct < 0.5:
+            lagging.append(r)
+
+        if pct > max_pct:
+            max_pct = pct
+            leading = r
+
+    median_pct = statistics.median(pcts) if pcts else 0.0
+    median_cov = statistics.median(covs) if covs else 0.0
+    median_target = statistics.median(targets) if targets else 0.0
+    pct_met = (len(met) / len(viable)) * 100 if viable else 0.0
+
+    return {
+        'total_viable': len(viable),
+        'met_count': len(met),
+        'close_count': len(close),
+        'lagging_count': len(lagging),
+        'pct_met': pct_met,
+        'median_pct': median_pct,
+        'median_cov': median_cov,
+        'median_target': median_target,
+        'leading_sample': leading,
+        'lagging_samples': lagging
+    }
+
 def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_below_coverage=None, output_csv=False, bin_threshold=7000, no_low_material=False, quiet=False):
     # 1. Parse CSV
     samples = {}
@@ -143,12 +216,18 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 except (ValueError, TypeError):
                     genome_size_mb = 0.0
 
+                try:
+                    target_cov = float(row.get('target_coverage') or 55.0)
+                except (ValueError, TypeError):
+                    target_cov = 55.0
+
                 samples[barcode] = {
                     'alias': row.get('alias', ''),
                     'type': row.get('type', 'test_sample'),
                     'genome_size_mb': genome_size_mb,
                     'experiment_id': row.get('experiment_id', ''),
-                    'low_material': low_mat_val
+                    'low_material': low_mat_val,
+                    'target_coverage': target_cov
                 }
                 if csv_exp_id is None:
                     csv_exp_id = row.get('experiment_id')
@@ -246,7 +325,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
     # 3. Calculate and Output
     show_eta = bool(summary_path and filter_below_coverage is not None)
     
-    cols = ['alias', 'barcode', 'low_mat', 'total_mb', 'genome_mb', 'coverage']
+    cols = ['alias', 'barcode', 'low_mat', 'total_mb', 'genome_mb', 'coverage', 'target_cov']
     if show_eta:
         cols.append('eta')
         
@@ -268,6 +347,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 'total_mb': f"{'yield (Mb)':>10}",
                 'genome_mb': f"{'genome (Mb)':>12}",
                 'coverage': f"{'cov':>6}",
+                'target_cov': f"{'target':>7}",
                 'eta': f"{'eta':>11}",
                 'avg_len': f"{'avg_len':>8}",
                 'short_total_mb': f"{f'<{thresh_kb} yield':>12}",
@@ -276,7 +356,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                 'long_avg_len': f"{f'>={thresh_kb} avg':>10}"
             }
             print(" ".join([header_map[c] for c in cols]))
-            print("-" * (128 if summary_path else 68))
+            print("-" * (136 if summary_path else 76))
     
     results_out = []
     
@@ -290,17 +370,20 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
         total_mb = y['bases'] / 1_000_000
         genome_mb = info['genome_size_mb']
         coverage = total_mb / genome_mb if genome_mb > 0 else 0
+        target_cov = info['target_coverage']
         
+        effective_target = filter_below_coverage if filter_below_coverage is not None else target_cov
+
         if filter_below_coverage is not None and coverage >= filter_below_coverage:
             continue
             
         eta_str = ""
         if show_eta:
-            target_mb = filter_below_coverage * genome_mb
+            target_mb = effective_target * genome_mb
             remaining_mb = target_mb - total_mb
             if max_start_time > 0 and total_mb > 0:
                 rate_mb_per_sec = total_mb / max_start_time
-                eta_secs = remaining_mb / rate_mb_per_sec
+                eta_secs = remaining_mb / rate_mb_per_sec if remaining_mb > 0 else 0
                 eta_hrs, eta_rem = divmod(eta_secs, 3600)
                 eta_mins = eta_rem // 60
                 eta_str = f"{int(eta_hrs)}h {int(eta_mins)}m"
@@ -317,6 +400,8 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             'genome_mb': f"{genome_mb:.2f}",
             'coverage': f"{coverage:.1f}",
             'coverage_float': float(coverage),
+            'target_cov': f"{target_cov:.1f}",
+            'target_coverage_float': float(target_cov),
             'eta': eta_str,
             'avg_len': f"{int(y['bases']/y['reads'])}" if y['reads'] > 0 else "0",
             'short_total_mb': f"{y['short_bases']/1_000_000:.2f}",
@@ -338,6 +423,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                     'total_mb': f"{row_data['total_mb']:>10}",
                     'genome_mb': f"{row_data['genome_mb']:>12}",
                     'coverage': f"{row_data['coverage']:>6}",
+                    'target_cov': f"{row_data['target_cov']:>7}",
                     'eta': f"{row_data['eta']:>11}",
                     'avg_len': f"{row_data['avg_len']:>8}",
                     'short_total_mb': f"{row_data['short_total_mb']:>12}",
@@ -346,5 +432,19 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
                     'long_avg_len': f"{row_data['long_avg_len']:>10}"
                 }
                 print(" ".join([fmt_map[c] for c in cols]))
+
+    if not quiet and not output_csv and results_out:
+        stats = compute_cohort_stats(results_out, exclude_low_material=no_low_material)
+        if stats['total_viable'] > 0:
+            divider_len = 136 if summary_path else 76
+            print("-" * divider_len)
+            lead = stats['leading_sample']
+            lead_str = f"{lead.get('full_alias') or lead.get('alias')} ({lead.get('coverage_float', 0):.1f}x/{lead.get('target_coverage_float', 55):.1f}x)" if lead else "N/A"
+            print(
+                f"Cohort Summary: {stats['met_count']}/{stats['total_viable']} met target ({stats['pct_met']:.1f}%) | "
+                f"Median: {stats['median_cov']:.1f}x/{stats['median_target']:.1f}x ({stats['median_pct']:.1f}%) | "
+                f"Lead: {lead_str} | "
+                f"Lagging (<50%): {stats['lagging_count']}"
+            )
 
     return results_out
