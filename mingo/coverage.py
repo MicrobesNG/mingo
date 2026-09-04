@@ -395,6 +395,7 @@ def run_coverage_analysis(csv_path, json_path=None, summary_path=None, filter_be
             'full_alias': info['alias'],
             'type': info['type'],
             'barcode': barcode,
+            'experiment_id': info.get('experiment_id', ''),
             'low_mat': "Y" if info['low_material'] else " ",
             'total_mb': f"{total_mb:.2f}",
             'genome_mb': f"{genome_mb:.2f}",

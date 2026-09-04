@@ -160,7 +160,8 @@ class MinKNOWWatcher:
             except Exception:
                 pass
                 
-    def _coverage_thread_func(self, pos_name: str, output_path: str, stop_event: threading.Event):
+    def _coverage_thread_func(self, pos_name: str, output_path: str, stop_event: threading.Event,
+                             experiment_id: Optional[str] = None, protocol_id: Optional[str] = None):
         logger.info(f"[{self.host_name}:{pos_name}] Started async coverage monitoring on {output_path}")
         alerted_lead_50 = False
         alerted_lead_100 = False
@@ -201,6 +202,9 @@ class MinKNOWWatcher:
                     pct_met = stats['pct_met']
                     lead = stats['leading_sample']
                     
+                    current_exp_id = experiment_id or (results[0].get('experiment_id') if results else None) or "Unknown"
+                    current_proto_id = protocol_id
+                    
                     if total_viable > 0 and lead is not None:
                         lead_cov = float(lead.get('coverage_float', 0.0))
                         lead_target = float(lead.get('target_coverage_float', 55.0))
@@ -232,7 +236,9 @@ class MinKNOWWatcher:
                             self.send_slack_notification(
                                 "coverage_50", 
                                 msg_text,
+                                experiment_id=current_exp_id,
                                 pos_name=pos_name,
+                                protocol_id=current_proto_id,
                                 extra_fields=extra_fields
                             )
                             
@@ -243,7 +249,9 @@ class MinKNOWWatcher:
                             self.send_slack_notification(
                                 "coverage_100", 
                                 msg_text,
+                                experiment_id=current_exp_id,
                                 pos_name=pos_name,
+                                protocol_id=current_proto_id,
                                 extra_fields=extra_fields
                             )
 
@@ -254,7 +262,9 @@ class MinKNOWWatcher:
                             self.send_slack_notification(
                                 "cohort_50",
                                 msg_text,
+                                experiment_id=current_exp_id,
                                 pos_name=pos_name,
+                                protocol_id=current_proto_id,
                                 extra_fields=extra_fields
                             )
 
@@ -265,7 +275,9 @@ class MinKNOWWatcher:
                             self.send_slack_notification(
                                 "cohort_quorum",
                                 msg_text,
+                                experiment_id=current_exp_id,
                                 pos_name=pos_name,
+                                protocol_id=current_proto_id,
                                 extra_fields=extra_fields
                             )
                             
@@ -277,7 +289,9 @@ class MinKNOWWatcher:
                             self.send_slack_notification(
                                 "coverage_hourly", 
                                 msg_text,
+                                experiment_id=current_exp_id,
                                 pos_name=pos_name,
+                                protocol_id=current_proto_id,
                                 extra_fields=extra_fields
                             )
                         
@@ -292,7 +306,9 @@ class MinKNOWWatcher:
                     break
                 time.sleep(1)
 
-    def _start_coverage_watcher(self, pos_name: str, path: str):
+    def _start_coverage_watcher(self, pos_name: str, path: str,
+                                experiment_id: Optional[str] = None,
+                                protocol_id: Optional[str] = None):
         self._stop_coverage_watcher(pos_name)
         if not path:
             return
@@ -303,7 +319,11 @@ class MinKNOWWatcher:
             )
             return
         stop_event = threading.Event()
-        t = threading.Thread(target=self._coverage_thread_func, args=(pos_name, path, stop_event), daemon=True)
+        t = threading.Thread(
+            target=self._coverage_thread_func,
+            args=(pos_name, path, stop_event, experiment_id, protocol_id),
+            daemon=True
+        )
         self.coverage_threads[pos_name] = (t, stop_event)
         t.start()
         
@@ -396,7 +416,7 @@ class MinKNOWWatcher:
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"📡 *MiNGo Watcher* • {now_str}"
+                    "text": f"*MiNGo Watcher* • {now_str}"
                 }
             ]
         })
@@ -499,7 +519,12 @@ class MinKNOWWatcher:
 
                                 if output_path and is_user_protocol:
                                     self._start_directory_watcher(pos.name, output_path)
-                                    self._start_coverage_watcher(pos.name, output_path)
+                                    self._start_coverage_watcher(
+                                        pos.name, 
+                                        output_path, 
+                                        experiment_id=experiment_id, 
+                                        protocol_id=protocol_id
+                                    )
 
                                 phase = "attached" if is_user_protocol else "info_attached"
                                 self.log_and_notify(
@@ -532,7 +557,12 @@ class MinKNOWWatcher:
                             # Start watcher when running starts
                             if output_path and is_user_protocol:
                                 self._start_directory_watcher(pos.name, output_path)
-                                self._start_coverage_watcher(pos.name, output_path)
+                                self._start_coverage_watcher(
+                                    pos.name, 
+                                    output_path, 
+                                    experiment_id=experiment_id, 
+                                    protocol_id=protocol_id
+                                )
 
                         phase = "starting" if is_user_protocol else "info_starting"
                         if not announced_start:
